@@ -22,7 +22,7 @@ import { listenForClap } from './lib/clap'
 import * as camera from './lib/camera'
 import * as kokoro from './lib/kokoro'
 import { LANG, TTS_ENGINE } from './config'
-import { forTool, attention } from './lib/fillers'
+import { forTool, attention, STARTUP_GREETING } from './lib/fillers'
 import {
   ask,
   warm,
@@ -257,6 +257,9 @@ export default function App() {
 
     store.getState().setError(null)
     sfx.play('wake')
+    // The start-up greeting can still be playing when he is first woken; cut
+    // it off rather than answer over it in a second voice.
+    silence()
 
     // "Jarvis, what's happening in AI this week" in one breath. Waiting for a
     // greeting he didn't need is the most common way an assistant wastes time.
@@ -375,6 +378,29 @@ export default function App() {
     }
   }
 
+  /**
+   * The start-up greeting, spoken over the boot sequence where the recorded
+   * intro used to play.
+   *
+   * The bridge is asked what it can speak with first: until it answers, a
+   * speaker only knows the browser voice, and the greeting would come out of
+   * Windows' Pavel rather than the Piper voice everything else uses. Not
+   * awaited by the boot — the reactor comes up while he talks, as it did under
+   * the recording. Waking him cuts it off (see onWake).
+   */
+  const greetOnStartup = async (text: string) => {
+    await probeCapabilities()
+    // Something else already has the floor — never two voices at once.
+    if (speaker.current) return
+    const greeting = createSpeaker()
+    speaker.current = greeting
+    // push, not say: cut into sentences, the first is heard while the rest
+    // are still being generated.
+    greeting.push(`${text} `)
+    await greeting.end()
+    if (speaker.current === greeting) speaker.current = null
+  }
+
   const ignite = async () => {
     const s = store.getState()
 
@@ -385,7 +411,10 @@ export default function App() {
     // The score. Must be started from inside this click handler for the same
     // reason as the rest of the audio.
     music.enable()
-    music.playBoot()
+    // The recorded intro is English; in Russian mode he greets in his own
+    // voice instead. See STARTUP_GREETING in fillers.ts.
+    if (STARTUP_GREETING) void greetOnStartup(STARTUP_GREETING)
+    else music.playBoot()
     music.startAmbient()
 
     s.setPhase('boot')

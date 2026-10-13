@@ -64,6 +64,23 @@ test('a long unpunctuated run is cut at a comma, not mid-phrase', () => {
   assert.ok(sentences[0].endsWith(','), `cut mid-phrase: "…${sentences[0].slice(-30)}"`)
 })
 
+test('the start-up greeting is cut into its four sentences and spoken as written', async () => {
+  const { prepareForSpeech } = await import('../src/lib/speechText.ts')
+  // Kept in step with STARTUP_GREETING in src/lib/fillers.ts.
+  const greeting =
+    'Здравствуйте! Я Юг-Трансфер, ваш персональный голосовой помощник. ' +
+    'Система успешно запущена и готова к работе. Чем могу помочь?'
+  const pieces = stream(greeting)
+  assert.deepEqual(pieces, [
+    'Здравствуйте!',
+    'Я Юг-Трансфер, ваш персональный голосовой помощник.',
+    'Система успешно запущена и готова к работе.',
+    'Чем могу помочь?',
+  ])
+  // Nothing in it is rewritten for the voice — the name included.
+  for (const p of pieces) assert.equal(prepareForSpeech(p, 'ru'), p)
+})
+
 test('nothing is cut before a sentence is finished', () => {
   const { sentences, rest } = takeSentences('Сейчас в Москве плюс')
   assert.deepEqual(sentences, [])

@@ -70,6 +70,22 @@ const ACKNOWLEDGE = tr(
   ],
 )
 
+/**
+ * Said once at power-up, in Russian mode, in place of the recorded intro.
+ *
+ * The intro is baked into public/audio/boot-music.mp3 — "Allow me to
+ * introduce myself. I am JARVIS, a virtual artificial intelligence… Systems
+ * are now fully operational." — mixed with its sound effects, so the English
+ * voice cannot be taken out of the file. In Russian mode the file is not
+ * played and this line is spoken instead; null keeps the recording, which is
+ * what English mode does.
+ */
+export const STARTUP_GREETING: string | null =
+  LANG === 'ru'
+    ? 'Здравствуйте! Я Юг-Трансфер, ваш персональный голосовой помощник. ' +
+      'Система успешно запущена и готова к работе. Чем могу помочь?'
+    : null
+
 /** Answering to his name, before the user has said what they want. */
 const ATTENTION = tr(
   ['Yes, sir?', 'Sir?', 'At your service, sir.', 'Standing by.', 'Awake, sir.'],

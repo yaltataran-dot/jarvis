@@ -232,7 +232,14 @@ export function warmPiper(lang) {
  * kept, so the cache stays a few megabytes however long the bridge runs.
  */
 const CACHE_MAX_ENTRIES = 64
-const CACHE_MAX_CHARS = 48
+/**
+ * 64, not 48: the start-up greeting's longest sentence is 51 characters, and
+ * the boot animation is the busiest moment for the CPU — generated fresh, it
+ * left a second's pause after "Здравствуйте!". Cached, every power-up after
+ * the bridge's first is instant. 64 entries of a few seconds each stay under
+ * about fifteen megabytes.
+ */
+const CACHE_MAX_CHARS = 64
 const cache = new Map()
 
 const synthesise = async (chosen, text) => {
