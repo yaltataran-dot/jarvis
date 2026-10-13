@@ -16,6 +16,21 @@ import { BRIDGE_WS_URL } from '../config'
  * invisible: `watchConnection` exists so the HUD can say so.
  */
 
+const TRACE = import.meta.env.VITE_TRACE === '1'
+
+/**
+ * A diagnostic breadcrumb, off unless VITE_TRACE=1. Goes to the console and,
+ * over the open socket, into the bridge's own log, so a silent drop shows up
+ * in the terminal. Callers pass step names, lengths and short prefixes only.
+ */
+export function trace(step: string, info: Record<string, string | number | boolean> = {}): void {
+  if (!TRACE) return
+  console.info('[jarvis:trace]', step, info)
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'trace', step, info }))
+  }
+}
+
 /** Anything the bridge sends. Deliberately loose — a frame from a future
  *  bridge build should be ignored, not crash the turn. */
 type Frame = {
@@ -339,6 +354,7 @@ export async function ask(
    * below claims the slot there is nothing left to collide with. The abandoned
    * turn's caller sees its own `stale()` check and stands down quietly.
    */
+  trace('ask:start', { len: prompt.length, open: socket?.readyState === WebSocket.OPEN })
   if (pending) cancel()
 
   // Claim the slot in this same tick. connect() below awaits, and two calls
@@ -355,11 +371,13 @@ export async function ask(
     ws = await connect()
   } catch (err) {
     pending = null
+    trace('ask:connect-failed')
     throw err
   }
 
   // Barged in on before the socket was even up. Nothing was ever asked.
   if (cancelledWhileDialling) {
+    trace('ask:cancelled-while-dialling')
     pending = null
     return { text: '', tools: [] }
   }
@@ -467,6 +485,7 @@ export async function ask(
     arm()
 
     try {
+      trace('ask:sent', { id })
       ws.send(JSON.stringify({ type: 'ask', text: prompt, id }))
     } catch (err) {
       // The socket can go into CLOSING between connect() resolving and here.
@@ -484,6 +503,7 @@ export async function ask(
  * transcript keeps the half-sentence the user actually heard.
  */
 export function cancel(): void {
+  trace('cancel', { pending: Boolean(pending) })
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: 'interrupt' }))
   }

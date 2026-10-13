@@ -5,15 +5,23 @@ import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
 import { useStore } from './store'
-import { startVoice, type Voice, type VoiceMode } from './lib/voice'
+import {
+  startVoice,
+  NAME,
+  NAME_END,
+  NAME_PREFIX,
+  type Voice,
+  type VoiceMode,
+} from './lib/voice'
 import { createSpeaker, cycleVoice, currentVoiceName } from './lib/tts'
+import { STOP_ONLY } from './lib/stopWords'
 import * as sfx from './lib/sfx'
 import * as music from './lib/music'
 import * as hands from './lib/hands'
 import { listenForClap } from './lib/clap'
 import * as camera from './lib/camera'
 import * as kokoro from './lib/kokoro'
-import { TTS_ENGINE } from './config'
+import { LANG, TTS_ENGINE } from './config'
 import { forTool, attention } from './lib/fillers'
 import {
   ask,
@@ -31,6 +39,7 @@ import {
 } from './lib/brain'
 import { startAnalyser, micLevel } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
+import { trace } from './lib/bridge'
 import { env } from './config'
 
 /**
@@ -63,11 +72,13 @@ const newId = () =>
 
 /** The same mishearings voice.ts accepts for the wake word — otherwise a turn
  *  that woke him as "travis" gets that word sent on to the model as a question. */
-const NAME = '(?:jarvis|jarvys|jervis|travis|jarviss|java\'s|jarv)'
-/** A bare vocative — "Jarvis", "hey jarvis" — with nothing asked. */
-const BARE_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}[\\s,.!?]*$`, 'i')
-/** A leading vocative on a real command: "Jarvis, what's the weather". */
-const LEADING_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}\\b[\\s,.:!?-]*`, 'i')
+/** A bare vocative — "Jarvis", "эй, Джарвис" — with nothing asked. */
+const BARE_NAME = new RegExp(`^(?:${NAME_PREFIX}[\\s,]*)?${NAME}[\\s,.!?]*$`, 'iu')
+/** A leading vocative on a real command: "Джарвис, какая погода". */
+const LEADING_NAME = new RegExp(
+  `^(?:${NAME_PREFIX}[\\s,]*)?${NAME}${NAME_END}[\\s,.:!?-]*`,
+  'iu',
+)
 
 export default function App() {
   const store = useStore
@@ -99,6 +110,7 @@ export default function App() {
   }
 
   const goDormant = () => {
+    trace('app:dormant')
     clearIdle()
     silence()
     turn.current++
@@ -126,6 +138,7 @@ export default function App() {
   const respond = async (said: string): Promise<void> => {
     const mine = ++turn.current
     const stale = () => mine !== turn.current
+    trace('app:respond', { len: said.length })
 
     clearIdle()
     const s = store.getState()
@@ -182,6 +195,7 @@ export default function App() {
         },
       })
 
+      trace('app:answer', { len: text.length, stale: stale() })
       if (stale()) return
 
       // The bridge keeps conversation state in its own session, so history is
@@ -238,6 +252,7 @@ export default function App() {
 
   const onWake = (trailing: string) => {
     const phase = store.getState().phase
+    trace('app:wake', { phase, trailing: trailing.length })
     if (phase === 'offline' || phase === 'boot') return
 
     store.getState().setError(null)
@@ -270,6 +285,7 @@ export default function App() {
   const onSpeechStart = () => {
     clearIdle()
     const phase = store.getState().phase
+    trace('app:speech-start', { phase })
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
 
     const wasBusy =
@@ -291,17 +307,30 @@ export default function App() {
 
   const onUtterance = (text: string) => {
     const phase = store.getState().phase
-    if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
+    trace('app:utterance', { phase, len: text.length })
+    if (phase === 'offline' || phase === 'boot' || phase === 'dormant') {
+      trace('app:ignored', { reason: phase })
+      return
+    }
 
     // People keep using his name as a vocative once they're already talking to
     // him. Strip it rather than sending "jarvis" to the model as a question.
     if (BARE_NAME.test(text)) {
+      trace('app:ignored', { reason: 'bare-name' })
       listen(AWAIT_SPEECH_MS)
       return
     }
     const said = text.replace(LEADING_NAME, '').trim()
     if (!said) {
+      trace('app:ignored', { reason: 'empty-after-name' })
       listen(AWAIT_SPEECH_MS)
+      return
+    }
+    // Stay open for the next question; listen() also re-arms the idle timer
+    // that the barge-in cleared.
+    if (STOP_ONLY.test(said)) {
+      trace('app:ignored', { reason: 'stop' })
+      listen(FOLLOW_UP_MS)
       return
     }
 
@@ -513,6 +542,9 @@ export default function App() {
     // first turn already uses ElevenLabs when a key is present and the browser
     // fallback when it is not — no flag, no reload.
     await probeCapabilities()
+    // Again, now that the bridge has said whether it speaks: the label set
+    // above could only name the browser voice.
+    store.getState().setVoice(currentVoiceName())
 
     // One voice loop, started once, running until the page closes.
     voice.current = await startVoice({
@@ -596,7 +628,12 @@ export default function App() {
         silence()
         const demo = createSpeaker()
         speaker.current = demo
-        demo.say(`Voice set to ${name.replace(/\(.*?\)/g, '').trim()}. At your service, sir.`)
+        const shown = name.replace(/\(.*?\)/g, '').trim()
+        demo.say(
+          LANG === 'ru'
+            ? `Голос: ${shown}. К вашим услугам, сэр.`
+            : `Voice set to ${shown}. At your service, sir.`,
+        )
         void demo.end()
         return
       }
@@ -638,7 +675,11 @@ export default function App() {
         silence()
         const t = createSpeaker()
         speaker.current = t
-        t.say('Audio test. If you can hear this, speech output is working, sir.')
+        t.say(
+          LANG === 'ru'
+            ? 'Проверка звука. Если вы это слышите, синтез речи работает, сэр.'
+            : 'Audio test. If you can hear this, speech output is working, sir.',
+        )
         void t.end().then(() => {
           const d = (window as unknown as Record<string, Record<string, unknown>>).__tts
           console.info('[jarvis] audio test →', d)

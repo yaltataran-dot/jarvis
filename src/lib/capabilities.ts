@@ -20,12 +20,20 @@ import { BACKEND, BRIDGE_HTTP_URL, env } from '../config'
 export type Capabilities = {
   /** ElevenLabs speech-to-text (Scribe) is reachable via the bridge. */
   stt: boolean
-  /** ElevenLabs text-to-speech is reachable via the bridge. */
+  /** The bridge can speak — ElevenLabs, or a local Piper voice. */
   tts: boolean
+  /** Which engine is behind `tts`. Piper is the free, local one. */
+  ttsEngine: 'elevenlabs' | 'piper' | null
+  /** Installed Piper voices, best first. Empty for ElevenLabs. */
+  voices: string[]
+  /** The Piper voice the bridge uses when none is asked for. */
+  voice: string | null
 }
 
+const NONE: Capabilities = { stt: false, tts: false, ttsEngine: null, voices: [], voice: null }
+
 /** Browser-only until the probe says otherwise. Safe default: the app works. */
-let current: Capabilities = { stt: false, tts: false }
+let current: Capabilities = NONE
 let probed = false
 
 /** The last known capabilities. Read synchronously by the voice and speech
@@ -47,7 +55,7 @@ export function capabilitiesProbed(): boolean {
 export async function probeCapabilities(): Promise<Capabilities> {
   if (BACKEND !== 'bridge') {
     // No bridge to ask. Direct mode has no server-side speech, so browser only.
-    current = { stt: false, tts: false }
+    current = NONE
     probed = true
     return current
   }
@@ -56,8 +64,17 @@ export async function probeCapabilities(): Promise<Capabilities> {
       signal: AbortSignal.timeout(3000),
     })
     if (res.ok) {
-      const h = (await res.json()) as { stt?: boolean; tts?: boolean }
-      current = { stt: Boolean(h.stt), tts: Boolean(h.tts) }
+      const h = (await res.json()) as Partial<Capabilities>
+      const tts = Boolean(h.tts)
+      current = {
+        stt: Boolean(h.stt),
+        tts,
+        // An older bridge reports only the booleans, and then a voice can only
+        // have been ElevenLabs.
+        ttsEngine: tts ? (h.ttsEngine === 'piper' ? 'piper' : 'elevenlabs') : null,
+        voices: Array.isArray(h.voices) ? h.voices.filter((v) => typeof v === 'string') : [],
+        voice: typeof h.voice === 'string' ? h.voice : null,
+      }
     }
   } catch {
     // Bridge down or slow — stay on the browser engines rather than blocking
@@ -71,6 +88,7 @@ export async function probeCapabilities(): Promise<Capabilities> {
 export function engineLabel(): string {
   const c = current
   if (c.stt && c.tts) return 'ElevenLabs'
+  if (c.ttsEngine === 'piper') return 'Piper voice'
   if (c.tts) return 'ElevenLabs voice'
   // env.elevenKey is only meaningful in direct mode; harmless to mention.
   if (env.elevenKey && BACKEND !== 'bridge') return 'ElevenLabs (direct)'

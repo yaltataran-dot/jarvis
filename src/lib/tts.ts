@@ -5,9 +5,12 @@ import {
   TTS_ENGINE,
   KOKORO_VOICE,
   BRIDGE_HTTP_URL,
+  LANG,
 } from '../config'
 import * as kokoro from './kokoro'
 import { caps } from './capabilities'
+import { prepareForSpeech } from './speechText'
+import { takeSentences } from './sentences'
 
 /**
  * Speech output.
@@ -50,8 +53,11 @@ let recent = ''
 let recentUntil = 0
 
 /** Recognition lags the speakers by a few hundred milliseconds, so a sentence
- *  keeps arriving at the microphone well after it has finished playing. */
-const ECHO_TAIL_MS = 1800
+ *  keeps arriving at the microphone well after it has finished playing. The
+ *  check that matters runs later still — after the recogniser's own lag, the
+ *  900ms silence endpoint and the assembler's settle, 1.2–2.4s after he stops —
+ *  and 1800 let the echo of a finished answer through as a new question. */
+const ECHO_TAIL_MS = 3000
 
 /**
  * Why you cannot hear him.
@@ -62,7 +68,7 @@ const ECHO_TAIL_MS = 1800
  * indistinguishable. This tells them apart at a glance.
  */
 export const diag = {
-  engine: 'system' as 'system' | 'kokoro' | 'elevenlabs',
+  engine: 'system' as 'system' | 'kokoro' | 'elevenlabs' | 'piper',
   /** Utterances handed to an engine — the OS voice or an audio element. */
   spoken: 0,
   /**
@@ -118,7 +124,13 @@ function setSpeaking(text: string) {
     return
   }
   if (speaking) {
-    recent = speaking
+    // The whole recent answer, not just its last sentence: the recogniser hands
+    // the echo back as one phrase spanning several sentences, and matched
+    // against the last one alone it scored as something new.
+    const still = Date.now() < recentUntil ? recent : ''
+    // 800, not 400: each sentence is now held in both its written and spoken
+    // forms, so the same span of answer takes about twice the characters.
+    recent = `${still} ${speaking}`.trim().slice(-800)
     recentUntil = Date.now() + ECHO_TAIL_MS
   }
   speaking = ''
@@ -138,25 +150,7 @@ export function speakingNow(): string {
   return `${speaking} ${tail}`.trim()
 }
 
-// ---------------------------------------------------------------------------
-// Sentence boundaries
-// ---------------------------------------------------------------------------
-
-/** Sentence end, allowing a closing quote or bracket — curly ones included,
- *  since models emit typographic punctuation far more often than ASCII. */
-const SENTENCE_END = /([.!?]["'')\]”’]?\s)|(\n\n)/
-
-/** Full stops that are not sentence ends. Cutting on these puts an audible
- *  gap inside "Mr. Stark" and reads as a stutter. */
-const ABBREVIATION =
-  /(?:^|\s)(mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e|approx|inc|ltd|co|no|vol|fig|dept|est|min|max|hr|hrs|a\.m|p\.m|u\.s|u\.k|no)\.$/i
-
-/**
- * Nobody punctuates forever, but a model occasionally writes a long clause
- * with no terminator at all — and while it does, nothing is spoken. Past this
- * many characters, cut at the last word boundary and start talking.
- */
-const MAX_UNSPOKEN = 220
+// Sentence boundaries live in sentences.ts.
 
 // ---------------------------------------------------------------------------
 // Voice selection
@@ -174,6 +168,7 @@ const VOICE_PREF_KEY = 'jarvis.voice'
  * Voice → Manage Voices) and once installed it appears here automatically.
  */
 function score(v: SpeechSynthesisVoice): number {
+  if (LANG === 'ru') return scoreRussian(v)
   const n = v.name.toLowerCase()
   let s = 0
 
@@ -204,15 +199,42 @@ function score(v: SpeechSynthesisVoice): number {
   return s
 }
 
+/**
+ * The Russian ranking. There are few Russian voices on any machine, so every
+ * one of them is usable — reading Russian in the right language matters far
+ * more than the timbre. Male first, for the character, then the rest:
+ *
+ *   Microsoft Dmitry Online (Natural) — Edge's neural voice, the best on Windows
+ *   Microsoft Pavel                   — the installed Windows voice (language pack)
+ *   Google русский                    — Chrome's online voice
+ *   Microsoft Svetlana / Irina        — female, but Russian
+ */
+function scoreRussian(v: SpeechSynthesisVoice): number {
+  if (!/^ru/i.test(v.lang)) return -1000
+  const n = v.name.toLowerCase()
+  let s = USABLE
+  if (n.includes('dmitry')) s += 60
+  else if (n.includes('pavel')) s += 45
+  else if (n.includes('google')) s += 30
+  else if (n.includes('svetlana')) s += 20
+  else if (n.includes('irina')) s += 10
+  if (n.includes('natural')) s += 20
+  return s
+}
+
 /** Only voices that scored on a name match, not merely on being English —
  *  otherwise the picker cycles through a dozen US novelty voices. */
 const USABLE = 40
+
+/** The voice language that matches LANG. Anything else would read Russian
+ *  text as gibberish, or English text with a Russian accent. */
+const VOICE_LANG = LANG === 'ru' ? /^ru/i : /^en/i
 
 /** Best-first list of usable voices — also what the voice picker cycles. */
 export function candidateVoices(): SpeechSynthesisVoice[] {
   return speechSynthesis
     .getVoices()
-    .filter((v) => /^en/i.test(v.lang))
+    .filter((v) => VOICE_LANG.test(v.lang))
     .map((v) => ({ v, s: score(v) }))
     .filter((x) => x.s >= USABLE)
     .sort((a, b) => b.s - a.s)
@@ -231,12 +253,13 @@ function pickVoice(): SpeechSynthesisVoice | null {
   // if that voice is ever reinstalled.
   const saved = localStorage.getItem(VOICE_PREF_KEY)
   if (saved) {
-    const hit = all.find((v) => v.name === saved)
+    // A voice picked in the other language mode is not a choice for this one.
+    const hit = all.find((v) => v.name === saved && VOICE_LANG.test(v.lang))
     if (hit) return (cachedVoice = hit)
     localStorage.removeItem(VOICE_PREF_KEY)
   }
 
-  cachedVoice = candidateVoices()[0] ?? all.find((v) => /^en/i.test(v.lang)) ?? null
+  cachedVoice = candidateVoices()[0] ?? all.find((v) => VOICE_LANG.test(v.lang)) ?? null
   return cachedVoice
 }
 
@@ -244,6 +267,7 @@ function pickVoice(): SpeechSynthesisVoice | null {
  *  always naming a speechSynthesis voice that a cloud or neural engine has
  *  quietly replaced. */
 export function currentVoiceName(): string {
+  if (caps().ttsEngine === 'piper') return piperLabel(piperVoice())
   if (USE_ELEVENLABS || caps().tts) return 'ElevenLabs'
   if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
     return KOKORO_VOICE.replace(/^bm_/, '')
@@ -251,9 +275,54 @@ export function currentVoiceName(): string {
   return pickVoice()?.name ?? 'default'
 }
 
+// ---------------------------------------------------------------------------
+// Piper voices (the bridge's local neural engine)
+// ---------------------------------------------------------------------------
+
+const PIPER_PREF_KEY = 'jarvis.piperVoice'
+
+/** Speaker names in the voice ids, as they should be read out and shown. */
+const PIPER_NAMES: Record<string, string> = {
+  ruslan: 'Руслан',
+  dmitri: 'Дмитрий',
+  denis: 'Денис',
+  irina: 'Ирина',
+}
+
+/** "ru_RU-ruslan-medium" → "Руслан (Piper)". */
+function piperLabel(id: string | null): string {
+  if (!id) return 'Piper'
+  const speaker = id.split('-')[1] ?? id
+  const name = LANG === 'ru' ? (PIPER_NAMES[speaker] ?? speaker) : speaker
+  return `${name} (Piper)`
+}
+
+function piperVoice(): string | null {
+  const { voices, voice } = caps()
+  try {
+    const saved = localStorage.getItem(PIPER_PREF_KEY)
+    if (saved && voices.includes(saved)) return saved
+  } catch {
+    /* storage blocked — the bridge default stands */
+  }
+  return voice ?? voices[0] ?? null
+}
+
 /** Step to the next candidate — lets you audition voices on your own machine
  *  rather than trusting a ranking to be right about how they sound. */
 export function cycleVoice(): string {
+  if (caps().ttsEngine === 'piper') {
+    const { voices } = caps()
+    if (!voices.length) return piperLabel(null)
+    const i = voices.indexOf(piperVoice() ?? '')
+    const next = voices[(i + 1) % voices.length]
+    try {
+      localStorage.setItem(PIPER_PREF_KEY, next)
+    } catch {
+      /* the choice lasts until reload */
+    }
+    return piperLabel(next)
+  }
   const list = candidateVoices()
   if (!list.length) return 'default'
   const now = pickVoice()
@@ -323,14 +392,24 @@ function shape(text: string): string {
       // The vocative wants its comma — that small beat before "sir" does most
       // of the characterisation. Anchored to a following pause or end of line
       // so the honorific is left alone: "Sir Isaac Newton" is not a vocative.
-      .replace(/([^,\s])\s+(sir)(\s*[.,!?;:]|\s*$)/gi, '$1, $2$3')
+      .replace(/([^,\s])\s+(sir|сэр)(\s*[.,!?;:]|\s*$)/giu, '$1, $2$3')
       .replace(/\s+/g, ' ')
       .trim()
   )
 }
 
+/** Markdown off, then the text made speakable — see speechText.ts. */
+const forSpeech = (text: string) => prepareForSpeech(shape(text), LANG)
+
 type Item = {
   text: string
+  /**
+   * What the microphone may hear back, for the echo filter: the spoken form
+   * and the written one together. The recogniser writes his "шестьдесят
+   * километров в час" back as "60 км/ч", and matched against the spoken form
+   * alone that echo looked like something new.
+   */
+  heard: string
   /** Generation starts one sentence ahead, not all at once. */
   audio?: Promise<string | null> | null
 }
@@ -356,10 +435,11 @@ export function createSpeaker(): Speaker {
     if (cancelled) return
     // Shape once here so both engines get the same text — stripped markdown,
     // and the comma before "sir" that buys the beat.
-    const text = shape(sentence)
+    const text = forSpeech(sentence)
     if (!text) return
 
-    const item: Item = { text }
+    const written = shape(sentence)
+    const item: Item = { text, heard: written === text ? text : `${written} ${text}` }
     if (priority) {
       // Genuinely ahead of the queue this time. The old `say()` appended to the
       // same chain and only appeared to preempt because it was called when the
@@ -368,6 +448,14 @@ export function createSpeaker(): Speaker {
     } else {
       queue.push(item)
     }
+    // The sentence that will play next starts generating now, not when the one
+    // playing ends. The pump only primed at the moment it moved on, which is
+    // fine when the whole answer is queued at once — but Claude streams, so the
+    // next sentence nearly always arrives while the current one is already
+    // playing, and its generation then waited for the end of playback: a pause
+    // the full length of the synthesis after every sentence. Still exactly one
+    // ahead — only queue[0] is primed.
+    if (pumping) prime(queue[0])
     void pump()
   }
 
@@ -384,7 +472,7 @@ export function createSpeaker(): Speaker {
       // for a session that had spoken every one of its sentences through
       // ElevenLabs, which makes the one field naming the engine useless
       // exactly when you are trying to work out which engine is at fault.
-      diag.engine = 'elevenlabs'
+      diag.engine = caps().ttsEngine ?? 'elevenlabs'
       return fetchCloudAudio(text).catch(() => null)
     }
     if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
@@ -425,7 +513,7 @@ export function createSpeaker(): Speaker {
 
   async function speakOne(item: Item): Promise<void> {
     if (cancelled) return
-    setSpeaking(item.text)
+    setSpeaking(item.heard)
     try {
       const url = item.audio ? await item.audio : null
       if (cancelled) return
@@ -455,7 +543,7 @@ export function createSpeaker(): Speaker {
         await playUrl(rescue, item.text)
       }
     } finally {
-      if (speaking === item.text) setSpeaking('')
+      if (speaking === item.heard) setSpeaking('')
     }
   }
 
@@ -477,7 +565,9 @@ export function createSpeaker(): Speaker {
       const u = new SpeechSynthesisUtterance(text)
       const voice = pickVoice()
       if (voice) u.voice = voice
-      u.lang = voice?.lang ?? 'en-GB'
+      // With no matching voice installed, naming the language still lets the
+      // browser fall back to whatever it has for it.
+      u.lang = voice?.lang ?? (LANG === 'ru' ? 'ru-RU' : 'en-GB')
       // Deliberate, and deliberately invariant — the character's pace does not
       // change with stakes, and that steadiness is most of the effect. This
       // lands around 130 wpm, below the median for film dialogue.
@@ -591,7 +681,12 @@ export function createSpeaker(): Speaker {
       // see the onplaying handler below.
       diag.spoken++
       diag.lastText = text.slice(0, 60)
-      diag.voice = diag.engine === 'kokoro' ? KOKORO_VOICE : 'ElevenLabs'
+      diag.voice =
+        diag.engine === 'kokoro'
+          ? KOKORO_VOICE
+          : diag.engine === 'piper'
+            ? piperLabel(piperVoice())
+            : 'ElevenLabs'
 
       let read: (() => number) | null = null
       const ctx = outputContext()
@@ -665,37 +760,10 @@ export function createSpeaker(): Speaker {
       if (cancelled) return
       buffer += delta
 
-      // Drain every complete sentence sitting in the buffer.
-      for (;;) {
-        const m = SENTENCE_END.exec(buffer)
-        if (!m) break
-        const cut = m.index + m[0].length
-        const candidate = buffer.slice(0, cut)
-        // "Mr. Stark" is not two sentences. Leave the text in the buffer and
-        // wait for a boundary that actually ends something.
-        if (ABBREVIATION.test(candidate.trimEnd())) {
-          const rest = buffer.slice(cut)
-          if (!SENTENCE_END.test(rest)) break
-          // Re-scan from after this false boundary by folding it forward.
-          const next = SENTENCE_END.exec(rest)!
-          const wider = cut + next.index + next[0].length
-          enqueue(buffer.slice(0, wider))
-          buffer = buffer.slice(wider)
-          continue
-        }
-        enqueue(candidate)
-        buffer = buffer.slice(cut)
-      }
-
-      // Unpunctuated prose would otherwise sit here silently until the answer
-      // ended, defeating the whole point of streaming.
-      if (buffer.length > MAX_UNSPOKEN) {
-        const cut = buffer.lastIndexOf(' ', MAX_UNSPOKEN)
-        if (cut > 40) {
-          enqueue(buffer.slice(0, cut))
-          buffer = buffer.slice(cut)
-        }
-      }
+      // Drain every complete sentence sitting in the buffer — see sentences.ts.
+      const { sentences, rest } = takeSentences(buffer)
+      buffer = rest
+      for (const s of sentences) enqueue(s)
     },
     async end() {
       if (buffer.trim()) {
@@ -744,7 +812,8 @@ async function fetchCloudAudio(text: string): Promise<string | null> {
       const res = await fetch(`${BRIDGE_HTTP_URL}/tts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text }),
+        // The voice matters only to Piper; ElevenLabs uses the bridge's own.
+        body: JSON.stringify({ text, voice: piperVoice() }),
       })
       if (res.ok) return URL.createObjectURL(await res.blob())
     } catch {
@@ -766,6 +835,8 @@ async function fetchCloudAudio(text: string): Promise<string | null> {
           body: JSON.stringify({
             text,
             model_id: 'eleven_flash_v2_5',
+            // Stated, not detected — see the same field in bridge/server.mjs.
+            language_code: LANG,
             voice_settings: {
               stability: 0.4,
               similarity_boost: 0.75,

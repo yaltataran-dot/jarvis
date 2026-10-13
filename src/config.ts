@@ -75,6 +75,24 @@ export const BRIDGE_WS_URL = str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://local
 export const BRIDGE_HTTP_URL = BRIDGE_WS_URL.replace(/^ws/, 'http')
 
 /**
+ * The language he hears and speaks.
+ *
+ *   'ru' (default) — recognition in ru-RU, a Russian system voice, Russian
+ *                    filler lines. The bridge reads the same variable (or its
+ *                    own JARVIS_LANG) and tells Claude to answer in Russian.
+ *   'en'           — the original English JARVIS.
+ *
+ * The wake word accepts both "Джарвис" and "Jarvis" in either mode, so only
+ * this one setting has to change.
+ */
+export const LANG: 'ru' | 'en' = choice(
+  'VITE_LANG',
+  import.meta.env.VITE_LANG,
+  ['ru', 'en'] as const,
+  'ru',
+)
+
+/**
  * Speech output engine.
  *
  * false (default) — the browser's own speechSynthesis. Runs on-device, so
@@ -107,12 +125,20 @@ export const USE_ELEVENLABS = flag(
  *     quantisation often silently falls back to CPU on WebGPU, which is the
  *     likely cause.
  */
-export const TTS_ENGINE: 'kokoro' | 'system' = choice(
+const REQUESTED_TTS_ENGINE: 'kokoro' | 'system' = choice(
   'VITE_TTS_ENGINE',
   import.meta.env.VITE_TTS_ENGINE,
   ['kokoro', 'system'] as const,
   'system',
 )
+
+/** Kokoro's voices are English only — asked to read Russian it produces noise,
+ *  so in Russian mode the system voice is used whatever was requested. */
+export const TTS_ENGINE: 'kokoro' | 'system' =
+  LANG === 'ru' ? 'system' : REQUESTED_TTS_ENGINE
+if (LANG === 'ru' && REQUESTED_TTS_ENGINE === 'kokoro') {
+  console.warn('[jarvis] VITE_TTS_ENGINE=kokoro has no Russian voice — using "system".')
+}
 
 /**
  * Which Kokoro voice. All four are British male:
@@ -301,4 +327,11 @@ Using tools:
 - If a tool fails or isn't connected, one plain sentence saying so.
 - For anything outward-facing or destructive (sending mail, posting, paying,
   deleting) say exactly what you're about to do and wait for confirmation.
-- If you don't know, say you don't know.`
+- If you don't know, say you don't know.` +
+  (LANG === 'ru'
+    ? `
+
+LANGUAGE: always answer in natural, conversational Russian, whatever language
+the question or a tool result is in. Use "сэр" instead of "sir", and write
+numbers, dates and times as Russian words in the right grammatical case.`
+    : '')

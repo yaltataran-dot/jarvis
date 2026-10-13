@@ -1,8 +1,11 @@
-import { BRIDGE_HTTP_URL } from '../config'
+import { BRIDGE_HTTP_URL, LANG } from '../config'
 import { getMic } from './audio'
 import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
+import { trace } from './bridge'
+import { L, OVERRIDE, R } from './stopWords'
+import { isEcho, norm } from './echo'
 
 /**
  * The voice loop.
@@ -76,9 +79,23 @@ const WAKE_DEBOUNCE = 1500
  * Jervis, Jarvys or Java's for a perfectly clear utterance — every one of which
  * used to be silently discarded, so the wake word "just didn't work" with no
  * indication why. Better a rare false wake than a name that does not answer.
+ *
+ * Russian recognition does the same to "Джарвис" — Джервис, Жарвис, Джарвиз —
+ * and still hands back the Latin spelling now and then, so both alphabets are
+ * accepted in both modes.
+ *
+ * `\b` only knows ASCII letters, so it never matches next to Cyrillic. The
+ * boundaries here are Unicode lookarounds instead (`u` flag on every regex
+ * built from them).
  */
-const WAKE =
-  /\b(?:hey|hi|ok|okay|yo)?\s*(?:jarvis|jarvys|jervis|jarvis's|travis|jarviss|java's|jarv)\b(?!'s)/i
+export const NAME_PREFIX = '(?:hey|hi|ok|okay|yo|эй|хей|хэй|привет|окей|ок|слушай)'
+export const NAME =
+  "(?:jarvis's|jarvis|jarvys|jervis|travis|jarviss|java's|jarv|" +
+  'джарвис|джарвиз|джарвес|джервис|жарвис|чарвис|джарви)'
+/** Ends a name, Unicode-aware — for callers building their own patterns. */
+export const NAME_END = R
+
+const WAKE = new RegExp(`${L}(?:${NAME_PREFIX}[\\s,]*)?${NAME}${R}(?!'s)`, 'iu')
 
 /** Everything after the wake phrase, which is usually the actual command. */
 function afterWake(text: string): string {
@@ -122,8 +139,12 @@ function afterWake(text: string): string {
  * a way a content-word list could never be, and none of them is a plausible
  * last word of a real request.
  */
-const CONTINUES =
-  /\b(and|or|but|so|because|since|if|when|while|that|which|who|whose|to|of|in|on|at|by|for|with|from|about|into|onto|over|under|between|through|the|a|an|my|your|his|her|its|our|their|is|are|was|were|be|been|do|does|did|have|has|had|can|could|would|should|will|shall|might|must|like|than|then|as|very|really|just|some|any|all|both|either|neither)$/i
+const CONTINUES = new RegExp(
+  `${L}(?:and|or|but|so|because|since|if|when|while|that|which|who|whose|to|of|in|on|at|by|for|with|from|about|into|onto|over|under|between|through|the|a|an|my|your|his|her|its|our|their|is|are|was|were|be|been|do|does|did|have|has|had|can|could|would|should|will|shall|might|must|like|than|then|as|very|really|just|some|any|all|both|either|neither|` +
+    // The Russian closed class: conjunctions, prepositions, possessives.
+    `и|или|а|но|что|чтобы|потому|поэтому|если|когда|пока|который|которая|которое|которые|в|во|на|о|об|обо|про|с|со|к|ко|по|за|из|от|до|для|у|при|над|под|между|через|без|мой|моя|моё|мое|мои|твой|ваш|ваша|наш|наша|их|его|её|ее|как|чем|же|ли|очень|самый|самая|самое)$`,
+  'iu',
+)
 
 /** Trailing punctuation a transcriber emits mid-thought. */
 const TRAILS = /[,;:–—-]$/
@@ -141,6 +162,9 @@ const TRAILS = /[,;:–—-]$/
  * is also least likely: the user has not yet heard enough to want to stop him.
  */
 const SELF_GUARD_MS = 350
+
+/** How long after sending a phrase its own late final result is recognised as such. */
+const LATE_FINAL_MS = 5000
 
 /**
  * A quiet gap this long with a finished-looking sentence ends the turn.
@@ -207,6 +231,7 @@ function makeAssembler(h: {
     const text = held.trim()
     held = ''
     firstAt = 0
+    trace('voice:utterance', { len: text.length })
     if (text) h.emit(text)
   }
 
@@ -250,72 +275,7 @@ function makeAssembler(h: {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Hearing himself
-// ---------------------------------------------------------------------------
-
-const norm = (s: string) =>
-  s
-    .toLowerCase()
-    .replace(/[^a-z0-9' ]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-/**
- * Short words that must always cut through, even when they collide with what
- * he happens to be saying. Suppressing "stop" because he just said "stop"
- * would be the single most infuriating failure this file could have.
- */
-const OVERRIDE =
-  /\b(stop|wait|jarvis|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i
-
-/**
- * Words too common to be evidence of anything.
- *
- * This set is the difference between a usable filter and an infuriating one.
- * "What about the second one?" is a perfectly ordinary follow-up, and every
- * word in it is likely to appear somewhere in the answer it follows — so a
- * naive bag-of-words match suppresses the user's real question as an echo.
- * Only distinctive words count as proof he is hearing himself.
- */
-const STOP = new Set(
-  ('a an the and or but so of to in on at by for with from is are was were be ' +
-    'it its this that these those i you he she we they me him her them my your ' +
-    'our their what which who how why when where do does did can could would ' +
-    'should will shall not no yes if then than as about into over under out up ' +
-    'down one two three first second third now here there just very really got ' +
-    'get have has had say said tell me okay ok well right').split(' '),
-)
-
-/**
- * Is this the microphone hearing the speakers?
- *
- * Compared as bags of words rather than by string distance: the recogniser
- * mangles its own playback badly enough that a substring match rarely holds,
- * but the *words* survive.
- */
-function isEcho(heard: string, spoken: string): boolean {
-  if (!spoken) return false
-  if (OVERRIDE.test(heard)) return false
-
-  const all = norm(heard).split(' ').filter(Boolean)
-  if (!all.length) return true
-
-  const mine = new Set(norm(spoken).split(' '))
-  const content = all.filter((w) => !STOP.has(w))
-
-  // Nothing distinctive was said at all, so there is no strong evidence either
-  // way. Demand a total match before discarding it — the cost of dropping a
-  // real question is much higher than the cost of one stray echo getting in.
-  if (content.length < 2) {
-    if (all.length < 2) return false
-    return all.every((w) => mine.has(w))
-  }
-
-  let hits = 0
-  for (const w of content) if (mine.has(w)) hits++
-  return hits / content.length >= 0.6
-}
+// Hearing himself — `isEcho` and `norm` live in echo.ts.
 
 // ---------------------------------------------------------------------------
 // Diagnostics
@@ -367,6 +327,7 @@ export const diag = {
  *  the difference between debugging it and speculating about it. */
 function drop(why: string) {
   diag.dropped = why
+  trace('voice:drop', { why: why.slice(0, 60) })
 }
 
 if (typeof window !== 'undefined') {
@@ -629,6 +590,10 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     partial: (text) => h.onPartial(text),
   })
 
+  /** The last phrase handed on as speech, normalised, and when — see onResult. */
+  let lastSent = ''
+  let lastSentAt = 0
+
   const touch = () => {
     lastAlive = Date.now()
   }
@@ -650,6 +615,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     const text = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
     const mode = h.mode()
     reset()
+    trace('voice:emit', { mode, len: text.length, text: text.slice(0, 40) })
     if (!text || mode === 'deaf') return
     if (isEcho(text, speakingNow())) {
       drop('echo of his own voice')
@@ -673,6 +639,8 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     // The recogniser has already endpointed on its own 900ms gap; the assembler
     // decides whether that gap actually ended the thought. `false` because a
     // result only reaches here once the recogniser has gone quiet.
+    lastSent = norm(text)
+    lastSentAt = Date.now()
     assemble.feed(text, false)
   }
 
@@ -703,6 +671,18 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     if (isEcho(`${fresh} ${interim}`, speakingNow())) {
       interim = ''
       return
+    }
+    // The recogniser finalising a phrase that has already been sent. Chrome's
+    // final result can land after the 900ms endpoint fired, when he is already
+    // thinking, and the repeat counted as a barge-in that cancelled the very
+    // question it repeats. A stop word always gets through.
+    if (mode === 'guard' && Date.now() - lastSentAt < LATE_FINAL_MS) {
+      const now = norm(`${fresh} ${interim}`)
+      if (now && lastSent.startsWith(now) && !OVERRIDE.test(now)) {
+        interim = ''
+        drop('late final of the question just sent')
+        return
+      }
     }
 
     if (mode === 'wake') {
@@ -760,7 +740,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     rec = new Ctor()
     rec.continuous = true
     rec.interimResults = true
-    rec.lang = 'en-GB'
+    rec.lang = LANG === 'ru' ? 'ru-RU' : 'en-GB'
     rec.onstart = () => {
       running = true
       diag.running = true

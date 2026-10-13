@@ -27,6 +27,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
+import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 
@@ -290,7 +291,44 @@ function decideTool(name) {
   return ALLOW_WRITES
 }
 
-const SYSTEM_PROMPT = `You are JARVIS. You are speaking out loud to one person.
+/**
+ * The language he answers in. Reads JARVIS_LANG, or the frontend's VITE_LANG
+ * when only that is set, so one variable in the shell switches both halves.
+ * Russian by default; 'en' restores the original English JARVIS.
+ */
+const LANG = (() => {
+  const raw = (process.env.JARVIS_LANG ?? process.env.VITE_LANG ?? '').trim().toLowerCase()
+  if (raw === '' || raw === 'ru') return 'ru'
+  if (raw === 'en') return 'en'
+  console.warn(`[jarvis] JARVIS_LANG="${raw}" is not ru or en — using ru.`)
+  return 'ru'
+})()
+
+/**
+ * Diagnostics, both off by default.
+ *
+ * JARVIS_DRY_ASK=1 answers every question with a fixed line instead of handing
+ * it to Claude, so the whole browser → bridge → browser → speech path can be
+ * checked on the real socket without paying for a turn. VITE_TRACE=1 (shared
+ * with the frontend through `npm start`) prints the page's trace frames and
+ * each ask/interrupt as it arrives.
+ */
+const DRY_ASK = process.env.JARVIS_DRY_ASK === '1'
+const TRACE = DRY_ASK || process.env.VITE_TRACE === '1'
+// Long enough (about ten seconds aloud) to cut off mid-sentence, and free of
+// every word in voice.ts's OVERRIDE list, or his own echo would interrupt it.
+const DRY_REPLY =
+  LANG === 'ru'
+    ? 'Проверка связи, сэр. Мост получил команду и отвечает без обращения к модели. ' +
+      'Этот ответ нарочно длинный, чтобы вы успели меня прервать. ' +
+      'Если вы всё ещё слышите эту фразу, прерывание не сработало. ' +
+      'Повторяю ещё раз: прерывание не сработало.'
+    : 'Connection check, sir. The bridge received the command and is answering without the model. ' +
+      'This reply is deliberately long, so that you have time to cut me off. ' +
+      'If you can still hear this sentence, the interruption did not work. ' +
+      'Once more: the interruption did not work.'
+
+const BASE_PROMPT = `You are JARVIS. You are speaking out loud to one person.
 
 LENGTH. Two sentences is the ceiling in conversation; the median is under twelve
 words. Every word is read aloud and the user waits in silence while it plays, so
@@ -317,9 +355,17 @@ REPORTING.
   negative existential — "I have no record of it." Always a fact about the
   world, never a shortcoming of yours. You never apologise. You never say sorry.
 - Good news first, bad news second, joined by "but".
-- Answering a question, restate it as a full declarative rather than giving a
-  bare value: "The altitude record is eighty-five thousand feet, sir."
+- Answering a question, lead with the answer itself, in a natural sentence
+  rather than a bare value — but never echo or paraphrase the question back
+  first. They know what they asked. "Eighty-five thousand feet, sir." not
+  "The altitude record you asked about is eighty-five thousand feet."
 - Executing an order, do not restate it. Act, then report.
+
+CONVERSATION. This is one continuing conversation, not a series of separate
+queries. A follow-up like "and tomorrow?" or "the second one" refers to what was
+just said — resolve it from context instead of asking what they mean. Never
+recap the previous answer. Vary how lines open; two answers in a row that start
+the same way sound mechanical.
 
 NEVER.
 - No filler words at all: no um, well, so, okay, right, let me check, one moment.
@@ -437,6 +483,59 @@ Using tools:
   Put the source in the panel as a short tag like "REUTERS" instead.
 - If a tool fails or isn't connected, one plain sentence saying so.
 - If you don't know, say you don't know.`
+
+/**
+ * Appended, not translated in place. The character rules above hold in any
+ * language; what changes is the surface — and the English example lines must
+ * not leak into a Russian answer, which is what this block forbids.
+ */
+const RUSSIAN = `
+
+ЯЗЫК — ГЛАВНОЕ ПРАВИЛО. Пользователь говорит по-русски. Ты всегда отвечаешь
+только по-русски, даже если вопрос, страница или результат инструмента на другом
+языке. Всё выше — описание характера; английские примеры фраз не произноси, а
+передавай естественными русскими эквивалентами.
+
+- Коротко: одна-две фразы, чаще всего меньше двенадцати слов. Длиннее — только
+  когда зачитываешь данные, о которых попросили.
+- Сразу к сути. Не повторяй и не пересказывай вопрос: на «Какая погода?» —
+  «Плюс двенадцать, облачно», а не «Погода в Москве сейчас такая…». Не
+  подытоживай свой прошлый ответ.
+- Это один разговор. «А завтра?», «а второй?», «подробнее» — продолжение
+  предыдущей темы: понимай из контекста, не переспрашивай очевидное.
+- Живая разговорная русская речь, без канцелярита и без калек с английского.
+  Не «Я завершил выполнение задачи», а «Готово, сэр». Начинай реплики
+  по-разному — одинаковые зачины звучат как автоответчик.
+- Обращение на «вы». «Сэр» — не чаще чем в каждой второй-третьей реплике,
+  никогда дважды в одной. В начале фразы — только для срочного.
+- Пиши для слуха, текст сразу озвучивается синтезатором: короткие предложения,
+  запятая там, где в речи пауза, в конце — точка. Без скобок, кавычек, тире
+  вместо запятых, списков и сокращений вроде «т.е.» и «и т.д.». Ставь букву «ё»
+  везде, где она есть: «всё», «ещё», «пойдём» — синтезатор иначе ошибается.
+- Плохие новости — через «Боюсь, …» или «К сожалению, …». Без извинений.
+- Без слов-паразитов и восторгов: никаких «ну», «итак», «секундочку», «сейчас
+  посмотрю», «конечно!», «отлично!», «с радостью».
+- Числа, даты, время и единицы пиши словами и в правильном падеже: «восемь
+  пятнадцать», «первого августа», «двадцать три градуса» — не «8:15», «01.08»,
+  «23°C». Синтезатор читает их плохо.
+- Иностранные имена и названия, которые нужно произнести, пиши кириллицей так,
+  как их говорят по-русски: «Гитхаб», «Ютуб», «Илон Маск».
+- Текст на панелях (blade, display) тоже по-русски, кроме имён собственных и
+  прямых цитат.`
+
+/**
+ * Said first as well as last. Appended alone, the rule sat beneath a long
+ * English prompt full of English example lines, which is the strongest pull
+ * there is towards answering in English.
+ */
+const RUSSIAN_HEAD = `ОТВЕЧАЙ ТОЛЬКО ПО-РУССКИ. Каждый ответ, каждое слово, которое будет
+произнесено вслух, — на русском языке. Инструкции ниже написаны по-английски
+лишь как описание характера; это не повод отвечать по-английски.
+
+`
+
+const SYSTEM_PROMPT =
+  LANG === 'ru' ? RUSSIAN_HEAD + BASE_PROMPT + RUSSIAN : BASE_PROMPT
 
 /**
  * ElevenLabs credentials, borrowed from the MCP server config.
@@ -682,9 +781,24 @@ const handleRequest = async (req, res) => {
     // with a key the app transcribes with Scribe and speaks with ElevenLabs;
     // without one it falls back to the browser's own recogniser and voice, so a
     // student with nothing configured still has a working assistant.
+    //
+    // Speech has a free middle tier: a local Piper voice, when one is
+    // installed, replaces the browser voice without any key. Recognition does
+    // not — Piper only speaks — so `stt` still tracks the key alone.
     const eleven = Boolean(elevenKey())
+    const voices = eleven ? [] : piperVoices(LANG)
+    const ttsEngine = eleven ? 'elevenlabs' : voices.length ? 'piper' : null
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-    return res.end(JSON.stringify({ ok: true, tts: eleven, stt: eleven }))
+    return res.end(
+      JSON.stringify({
+        ok: true,
+        tts: Boolean(ttsEngine),
+        stt: eleven,
+        ttsEngine,
+        voices,
+        voice: ttsEngine === 'piper' ? defaultPiperVoice(LANG) : null,
+      }),
+    )
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
@@ -808,9 +922,10 @@ const handleRequest = async (req, res) => {
 
   if (req.method === 'POST' && req.url === '/tts') {
     const key = elevenKey()
-    if (!key) {
+    const piperReady = piperVoices(LANG).length > 0
+    if (!key && !piperReady) {
       res.writeHead(503, cors)
-      return res.end('no elevenlabs key')
+      return res.end('no speech engine: no elevenlabs key and no piper voice')
     }
     // A spoken line is a few hundred bytes. Anything approaching this is not a
     // sentence, and buffering it unbounded would let one request eat the heap.
@@ -831,16 +946,38 @@ const handleRequest = async (req, res) => {
     // Inside a try: this handler is async with nothing catching its rejection,
     // so a malformed body used to take the entire bridge down with it.
     let text
+    let voice
     try {
-      ;({ text } = JSON.parse(body || '{}'))
+      ;({ text, voice } = JSON.parse(body || '{}'))
     } catch {
       res.writeHead(400, cors)
       return res.end('bad json')
     }
-    if (!text) {
+    if (!text || typeof text !== 'string') {
       res.writeHead(400, cors)
       return res.end('no text')
     }
+
+    // The local voice. Whole WAV rather than a stream: piper writes the file
+    // only once the sentence is done, and a sentence is a few hundred ms.
+    const speakLocally = async () => {
+      try {
+        const wav = await piperSpeak(text, LANG, typeof voice === 'string' ? voice : null)
+        res.writeHead(200, {
+          ...cors,
+          'content-type': 'audio/wav',
+          'content-length': wav.length,
+          'cache-control': 'no-cache',
+        })
+        return res.end(wav)
+      } catch (err) {
+        console.error(`[jarvis] piper failed: ${err?.message ?? err}`)
+        res.writeHead(502, cors)
+        return res.end(String(err?.message ?? err))
+      }
+    }
+    if (!key) return speakLocally()
+
     try {
       const upstream = await fetch(
         `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream` +
@@ -856,6 +993,9 @@ const handleRequest = async (req, res) => {
             // Flash is the low-latency model — a conversation needs speed more
             // than it needs the last few percent of quality.
             model_id: 'eleven_flash_v2_5',
+            // Stated, not detected. Left to guess, Flash reads a short Russian
+            // line like "Готово, сэр." with English phonetics.
+            language_code: LANG,
             voice_settings: {
               stability: 0.4,
               similarity_boost: 0.75,
@@ -865,6 +1005,9 @@ const handleRequest = async (req, res) => {
         },
       )
       if (!upstream.ok) {
+        // Out of credit, or the key was revoked: a local voice beats the
+        // browser's, so use it when there is one.
+        if (piperReady) return speakLocally()
         res.writeHead(upstream.status, cors)
         return res.end(await upstream.text())
       }
@@ -879,6 +1022,8 @@ const handleRequest = async (req, res) => {
       for await (const chunk of upstream.body) res.write(Buffer.from(chunk))
       return res.end()
     } catch (err) {
+      if (res.headersSent) return res.destroy()
+      if (piperReady) return speakLocally()
       res.writeHead(502, cors)
       return res.end(String(err?.message ?? err))
     }
@@ -937,6 +1082,9 @@ const handleRequest = async (req, res) => {
             : 'webm'
       const form = new FormData()
       form.append('model_id', 'scribe_v1')
+      // Without it Scribe detects the language per segment, and a two-word
+      // Russian command is short enough to come back as English or transliteration.
+      form.append('language_code', LANG)
       form.append(
         'file',
         new Blob([Buffer.concat(chunks)], { type }),
@@ -1001,9 +1149,23 @@ const wss = new WebSocketServer({
 server.listen(PORT)
 
 console.log(`[jarvis] bridge listening on ws://localhost:${PORT}`)
-console.log(
-  `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
-)
+console.log(`[jarvis] language ${LANG === 'ru' ? 'ru (Russian answers)' : 'en'}`)
+if (DRY_ASK) console.log('[jarvis] DRY mode — questions get a fixed reply, Claude is never called')
+if (TRACE) console.log('[jarvis] trace on — page steps print as [trace]')
+{
+  // Loaded now rather than on the first sentence, which would otherwise pay
+  // the second or so a model takes to load.
+  const piperVoice = elevenKey() ? null : warmPiper(LANG)
+  console.log(
+    `[jarvis] speech ${
+      elevenKey()
+        ? 'via ElevenLabs (key from MCP config)'
+        : piperVoice
+          ? `via local Piper voice ${piperVoice}`
+          : 'using browser fallback voice (no ElevenLabs key, no Piper voice installed)'
+    }`,
+  )
+}
 console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(
   `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED' : 'disabled'}` +
@@ -1031,13 +1193,22 @@ console.log(
  * What to tell the browser when a turn ends badly. Plain sentences, because
  * whatever reaches the client is liable to be spoken.
  */
-const RESULT_FAILURES = {
-  error_during_execution: 'The turn failed part way through.',
-  error_max_turns: 'The turn ran too long and was stopped.',
-  error_max_budget_usd: 'The budget for this turn ran out.',
-  error_max_structured_output_retries: 'The answer could not be assembled.',
-  default: 'The turn ended without an answer.',
-}
+const RESULT_FAILURES =
+  LANG === 'ru'
+    ? {
+        error_during_execution: 'Запрос прервался на полпути.',
+        error_max_turns: 'Запрос шёл слишком долго и был остановлен.',
+        error_max_budget_usd: 'Бюджет на этот запрос исчерпан.',
+        error_max_structured_output_retries: 'Не удалось собрать ответ.',
+        default: 'Запрос завершился без ответа.',
+      }
+    : {
+        error_during_execution: 'The turn failed part way through.',
+        error_max_turns: 'The turn ran too long and was stopped.',
+        error_max_budget_usd: 'The budget for this turn ran out.',
+        error_max_structured_output_retries: 'The answer could not be assembled.',
+        default: 'The turn ended without an answer.',
+      }
 
 wss.on('connection', (socket) => {
   console.log('[jarvis] client connected')
@@ -1168,6 +1339,34 @@ wss.on('connection', (socket) => {
    */
   const SETTLE_CAP_MS = 400
 
+  /**
+   * One question in the agent at a time.
+   *
+   * The settle above assumes interrupt() stops the turn. It does not while the
+   * session is still starting up — measured: ask, interrupt a second later, ask
+   * again, and the first answer ran to completion and arrived tagged with the
+   * second question's id, so the page took it for the new answer and dropped
+   * the real one. A new question is therefore handed over only once the
+   * previous turn's `result` is in, which keeps every frame tagged with the
+   * question that produced it. Capped so a turn that never reports cannot
+   * wedge the conversation.
+   */
+  let turnOpen = false
+  /** Interrupted before it was running — interrupt again once it is. */
+  let turnAbandoned = false
+  const idleWaiters = []
+  const TURN_WAIT_CAP_MS = 30_000
+  const turnIdle = () =>
+    turnOpen
+      ? Promise.race([
+          new Promise((r) => idleWaiters.push(r)),
+          new Promise((r) => setTimeout(r, TURN_WAIT_CAP_MS)),
+        ])
+      : Promise.resolve()
+  /** Deliveries run in arrival order; a question superseded while it waited is dropped. */
+  let delivery = Promise.resolve()
+  let newestAsk = 0
+
   const announceTool = (id, name) => {
     if (!name || (id && seenTools.has(id))) return
     if (id) seenTools.add(id)
@@ -1294,6 +1493,11 @@ wss.on('connection', (socket) => {
           // carries no deltas either. Turn includePartialMessages off and
           // JARVIS goes completely mute.
           case 'stream_event': {
+            // The abandoned turn is running now, so this time the interrupt lands.
+            if (turnAbandoned) {
+              turnAbandoned = false
+              void Promise.resolve(session.interrupt?.()).catch(() => {})
+            }
             const ev = msg.event
             if (
               ev?.type === 'content_block_delta' &&
@@ -1362,6 +1566,9 @@ wss.on('connection', (socket) => {
             // the only place a turn is genuinely over.
             finishTurn?.()
             finishTurn = null
+            turnOpen = false
+            turnAbandoned = false
+            for (const release of idleWaiters.splice(0)) release()
             // One turn's tool ids are never referred to again, and these
             // otherwise grow for as long as the socket is open.
             seenTools.clear()
@@ -1403,6 +1610,36 @@ wss.on('connection', (socket) => {
       return
     }
 
+    // A diagnostic breadcrumb from the page. Whitelisted shape, every field
+    // truncated, so nothing the page sends can flood or forge the log.
+    if (msg.type === 'trace') {
+      if (TRACE && typeof msg.step === 'string') {
+        const info = Object.entries(msg.info && typeof msg.info === 'object' ? msg.info : {})
+          .slice(0, 8)
+          .map(([k, v]) => `${String(k).slice(0, 20)}=${String(v).replace(/\s+/g, ' ').slice(0, 60)}`)
+          .join(' ')
+        console.log(`[trace] ${msg.step.slice(0, 40)} ${info}`)
+      }
+      return
+    }
+
+    if (msg.type === 'ask' && typeof msg.text === 'string' && TRACE) {
+      console.log(
+        `[jarvis] ask ${String(msg.id).slice(0, 12)} received (${msg.text.length} chars)` +
+          (DRY_ASK ? ' — DRY, Claude not called' : ''),
+      )
+    }
+
+    // The same frames a real turn produces, minus the model.
+    if (msg.type === 'ask' && typeof msg.text === 'string' && DRY_ASK) {
+      const id = typeof msg.id === 'string' ? msg.id : null
+      setTimeout(() => {
+        send({ type: 'text', delta: DRY_REPLY, ask: id })
+        send({ type: 'done', text: DRY_REPLY, costUsd: 0, ask: id })
+      }, 1500)
+      return
+    }
+
     if (msg.type === 'ask' && typeof msg.text === 'string') {
       /**
        * Queued behind any interrupt that is still settling.
@@ -1419,16 +1656,27 @@ wss.on('connection', (socket) => {
        */
       const text = msg.text
       const id = typeof msg.id === 'string' ? msg.id : null
-      void settling.then(() => {
-        answering = id
-        if (deliver) {
-          const resolve = deliver
-          deliver = null
-          resolve(text)
-        } else {
-          inbox.push(text)
-        }
-      })
+      const mine = ++newestAsk
+      delivery = delivery
+        .then(() => settling)
+        .then(turnIdle)
+        .then(() => {
+          // The page has moved on to a newer question and no longer listens
+          // for this one; running it would only pay for an unheard answer.
+          if (mine !== newestAsk) {
+            if (TRACE) console.log(`[jarvis] ask ${String(id).slice(0, 12)} superseded while waiting — not sent`)
+            return
+          }
+          answering = id
+          turnOpen = true
+          if (deliver) {
+            const resolve = deliver
+            deliver = null
+            resolve(text)
+          } else {
+            inbox.push(text)
+          }
+        })
     }
 
     if (msg.type === 'reply' && typeof msg.id === 'string') {
@@ -1441,6 +1689,8 @@ wss.on('connection', (socket) => {
     }
 
     if (msg.type === 'interrupt') {
+      if (TRACE) console.log('[jarvis] interrupt received')
+      if (turnOpen) turnAbandoned = true
       // Held so the next question can wait for it rather than racing it.
       const stopped = turnFinished()
       settling = Promise.resolve(session.interrupt?.())
@@ -1454,8 +1704,10 @@ wss.on('connection', (socket) => {
     }
   })
 
-  socket.on('close', () => {
-    console.log('[jarvis] client disconnected')
+  // The code says who ended it: 1001 is the page reloading or closing, 1006 a
+  // connection lost without a goodbye, 1000 a deliberate close.
+  socket.on('close', (code) => {
+    console.log(`[jarvis] client disconnected (code ${code})`)
     closed = true
     deliver?.(null)
     session.close?.()
