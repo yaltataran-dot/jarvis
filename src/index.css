@@ -845,164 +845,440 @@ kbd {
 }
 
 /* ------------------------------------------------------------------- boot */
+/*
+ * The start-up screen in the ЮГ-ТРАНСФЕР livery — see ui/Boot.tsx.
+ * Orange, white and graphite on black. Motion is transform and opacity
+ * wherever possible, so the compositor carries it; the stroke-dash pulses on
+ * the rings and the frame glints are the only repainting animations, and each
+ * is a single small path.
+ */
 
-.boot {
+.ut-boot {
+  --ut-orange: #ff7a00;
+  --ut-amber: #ffa53a;
+  --ut-hot: #ffd6a3;
+  --ut-graphite: #3a3a3c;
+  /* Size and vertical centre of the ring core; the platform, reflection and
+     checklist are placed from these. */
+  --ut-core: min(60vmin, 600px);
+  --ut-cy: 57%;
   position: fixed;
   inset: 0;
   z-index: 6;
-  background: var(--bg);
-  color: var(--accent);
   overflow: hidden;
+  background: #000;
+  color: #e9e9e9;
+  /* Nothing here is interactive. A full-screen layer that can be hit-tested is
+     how a stranded exit once swallowed every click and pinch (see Ignition.tsx)
+     — so even mid-fade, this one cannot. */
+  pointer-events: none;
+  /* Bahnschrift ships with Windows 10/11 and has Cyrillic, which Chakra Petch
+     does not; no download either way. */
+  font-family: 'Bahnschrift', 'Segoe UI', 'Roboto Condensed', system-ui, sans-serif;
 }
 
-/* -- beat 1: the status bar -------------------------------------------- */
+/* -- depth --------------------------------------------------------------- */
 
-.boot-bar {
-  position: absolute;
-  top: 12%;
-  left: 0;
-  right: 0;
-  padding: 0 min(9vw, 140px);
-  transition: opacity 0.6s ease, filter 0.6s ease;
-}
-.boot-bar-dim { opacity: 0.28; filter: blur(0.6px); }
-
-.boot-bar-frame {
-  position: relative;
-  border-top: 1.5px solid var(--accent);
-  border-bottom: 1.5px solid var(--accent);
-  padding: 14px 26px 12px;
-  clip-path: polygon(3% 0, 97% 0, 100% 42%, 97% 100%, 3% 100%, 0 42%);
-  box-shadow:
-    inset 0 0 40px color-mix(in srgb, var(--accent) 12%, transparent),
-    0 0 30px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-.boot-bar-title {
-  display: inline-flex;
-  align-items: center;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: clamp(18px, 3.4vw, 40px);
-  font-weight: 300;
-  letter-spacing: 0.14em;
-  color: #eafcff;
-  text-shadow: 0 0 26px color-mix(in srgb, var(--accent) 60%, transparent);
-}
-.boot-dots { opacity: 0.6; margin: 0 0.2em; }
-.boot-cursor {
-  display: inline-block;
-  width: 0.6em;
-  height: 1.05em;
-  margin-left: 0.15em;
-  background: var(--accent);
-  animation: bootBlink 0.7s steps(1) infinite;
-}
-@keyframes bootBlink { 50% { opacity: 0 } }
-
-.boot-seg { display: flex; gap: 3px; margin-top: 12px; }
-.boot-seg-cell {
-  flex: 1;
-  height: 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  transition: background 0.12s ease, box-shadow 0.12s ease;
-}
-.boot-seg-cell[data-on='1'] {
-  background: var(--accent);
-  box-shadow: 0 0 10px var(--accent);
-}
-
-.boot-log {
-  margin-top: 14px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  line-height: 1.9;
-  letter-spacing: 0.06em;
-  opacity: 0.6;
-}
-.boot-log-line { animation: bootLogIn 0.25s ease both; }
-.boot-log-line::before { content: '\203a  '; opacity: 0.5; }
-@keyframes bootLogIn { from { opacity: 0; transform: translateX(-8px) } }
-
-/* -- beats 2-4: the centre stage --------------------------------------- */
-
-.boot-stage {
+.ut-vignette {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
+  background:
+    radial-gradient(ellipse 55% 42% at 50% var(--ut-cy), rgba(255, 122, 0, 0.11), transparent 72%),
+    radial-gradient(ellipse 120% 90% at 50% 40%, #0c0805 0%, #040302 55%, #000 100%);
 }
-.boot-rings,
-.boot-suit,
-.boot-reactor {
-  width: min(58vmin, 520px);
-  height: min(58vmin, 520px);
+
+/* A floor of lights receding to the horizon, drifting towards the viewer. */
+.ut-floor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46%;
+  overflow: hidden;
+  perspective: 480px;
+  perspective-origin: 50% 0%;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.8) 40%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.8) 40%, transparent 100%);
+}
+.ut-floor-plane {
+  position: absolute;
+  left: -70%;
+  right: -70%;
+  bottom: 0;
+  height: 320%;
+  transform-origin: 50% 100%;
+  transform: rotateX(74deg);
+  background-image: radial-gradient(circle, rgba(255, 150, 60, 0.95) 0 1.4px, transparent 2.2px);
+  background-size: 28px 28px;
+  opacity: 0.8;
+  animation: utFloor 2.6s linear infinite;
+}
+@keyframes utFloor {
+  from { transform: rotateX(74deg) translateY(0); }
+  to { transform: rotateX(74deg) translateY(28px); }
+}
+
+/* The lit platform the core stands on, and its reflection on the floor. */
+.ut-platform {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--ut-cy) + var(--ut-core) * 0.47);
+  width: calc(var(--ut-core) * 1.18);
+  height: calc(var(--ut-core) * 0.15);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid rgba(255, 150, 50, 0.9);
+  box-shadow:
+    0 0 16px rgba(255, 122, 0, 0.85),
+    inset 0 0 22px rgba(255, 122, 0, 0.45),
+    0 0 70px rgba(255, 122, 0, 0.3);
+  animation: utPlatform 3.4s ease-in-out infinite;
+}
+.ut-platform::after {
+  content: '';
+  position: absolute;
+  inset: 18% 12%;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 190, 120, 0.45);
+}
+@keyframes utPlatform { 50% { opacity: 0.6; } }
+
+.ut-reflection {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--ut-cy) + var(--ut-core) * 0.47);
+  width: calc(var(--ut-core) * 0.9);
+  height: 40vh;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse 50% 60% at 50% 0%, rgba(255, 122, 0, 0.3), transparent 75%);
+  pointer-events: none;
+}
+
+/* -- header: frame, name, bar ---------------------------------------------- */
+
+.ut-header {
+  position: absolute;
+  left: 50%;
+  top: 5vh;
+  width: min(94vw, 1500px);
+  aspect-ratio: 1200 / 128;
+  transform: translateX(-50%);
+  animation: utHeaderIn 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes utHeaderIn {
+  from { opacity: 0; transform: translate(-50%, -14px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.ut-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   overflow: visible;
 }
+.ut-frame-line { fill: none; stroke-width: 2.5; }
+.ut-frame-inner { fill: rgba(255, 122, 0, 0.05); stroke: rgba(255, 170, 90, 0.35); stroke-width: 1; }
+.ut-frame-tick { fill: none; stroke: rgba(255, 170, 90, 0.5); stroke-width: 1.5; }
+.ut-frame-slash { fill: var(--ut-orange); }
+.ut-frame-graphite { stroke: #5a5a5c; stroke-width: 5; }
 
-.boot-ring {
+/* Small lights running round the frame's contour. */
+.ut-glint {
   fill: none;
-  stroke: var(--accent);
-  opacity: 0.8;
-  transform-box: fill-box;
-  transform-origin: center;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 50%, transparent));
-}
-.boot-name {
-  fill: #eafcff;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 20px;
-  text-anchor: middle;
-  dominant-baseline: middle;
-}
-
-.boot-wire {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.4;
-  opacity: 0.9;
-  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 55%, transparent));
-}
-.boot-wire-dim { opacity: 0.4; stroke-width: 1; }
-.boot-suit-fig { filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 40%, transparent)); }
-.boot-tag {
-  fill: var(--accent);
-  opacity: 0.55;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  letter-spacing: 0.14em;
-  text-anchor: middle;
-}
-
-.boot-r-seg {
-  stroke: color-mix(in srgb, var(--accent) 30%, transparent);
-  stroke-width: 8;
-}
-.boot-r-on { stroke: #dffbff; filter: drop-shadow(0 0 8px var(--accent)); }
-.boot-r-ring {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 2;
-  opacity: calc(0.3 + var(--glow) * 0.6);
-}
-.boot-r-ring-in { stroke-width: 1.5; opacity: calc(0.2 + var(--glow) * 0.5); }
-.boot-r-tri {
-  fill: color-mix(in srgb, var(--accent) calc(var(--glow) * 45%), transparent);
-  stroke: #eafcff;
+  stroke: #fff3e0;
   stroke-width: 3;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 0 calc(var(--glow) * 26px) var(--accent));
-}
-.boot-r-tri-in {
-  fill: color-mix(in srgb, #eafcff calc(var(--glow) * 60%), transparent);
-  stroke: none;
-}
-.boot-r-v {
-  fill: none;
-  stroke: #05161a;
-  stroke-width: 3.5;
-  stroke-linejoin: round;
   stroke-linecap: round;
-  opacity: var(--glow);
+  stroke-dasharray: 22 978;
+  animation: utGlint 7s linear infinite;
+}
+.ut-glint-2 { stroke: #ffb35c; animation-delay: -3.5s; }
+@keyframes utGlint {
+  from { stroke-dashoffset: 1000; }
+  to { stroke-dashoffset: 0; }
+}
+
+.ut-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 11%;
+  margin: 0;
+  text-align: center;
+  font-size: clamp(22px, 4.3vw, 66px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.07em;
+}
+.ut-title span {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.ut-title-ug {
+  margin-right: 0.32em;
+  background-image: linear-gradient(180deg, #ffc46e 0%, #ff8a14 48%, #e35a00 100%);
+  filter: drop-shadow(0 0 14px rgba(255, 122, 0, 0.55));
+}
+.ut-title-tr {
+  background-image: linear-gradient(180deg, #ffffff 0%, #ececec 46%, #9a9a9a 100%);
+  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.22));
+}
+
+.ut-bar {
+  position: absolute;
+  left: 7%;
+  right: 7%;
+  top: 70%;
+  height: 11%;
+  display: flex;
+  gap: 0.4%;
+  overflow: hidden;
+}
+.ut-bar-cell {
+  flex: 1;
+  transform: skewX(-28deg);
+  background: linear-gradient(#3d3d3f, #232325);
+  transition: background 0.4s ease, box-shadow 0.4s ease;
+}
+.ut-bar-cell[data-on='1'] {
+  background: linear-gradient(#ffb24c, #ff7a00);
+  box-shadow: 0 0 10px rgba(255, 122, 0, 0.75);
+}
+.ut-bar-cell[data-next='1'] { animation: utCharge 1.1s ease-in-out infinite; }
+@keyframes utCharge { 50% { background: #7a4210; } }
+.ut-bar-sheen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 12%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+  animation: utSheen 2.8s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes utSheen {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(840%); }
+}
+
+/* -- core: rings and logo ------------------------------------------------- */
+
+.ut-core {
+  position: absolute;
+  left: 50%;
+  top: var(--ut-cy);
+  width: var(--ut-core);
+  height: var(--ut-core);
+  transform: translate(-50%, -50%);
+  animation: utCoreIn 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 0.15s both;
+}
+/* Bloom behind the rings — a static gradient, so it costs nothing per frame. */
+.ut-core::before {
+  content: '';
+  position: absolute;
+  inset: -12%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 122, 0, 0.16), rgba(255, 122, 0, 0.06) 62%, transparent);
+  pointer-events: none;
+}
+@keyframes utCoreIn {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.86); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+.ut-rings {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+/* Every ring turns about the user-space origin, which the view box puts at the
+   centre. Not 50% 50%: against the view box that is (230, 230) — the arcs flew
+   off to the lower right. */
+.ut-rings * { transform-box: view-box; transform-origin: 0 0; }
+
+.ut-ticks line { stroke: rgba(255, 160, 80, 0.35); stroke-width: 1.2; }
+.ut-ring { fill: none; }
+
+.ut-dots {
+  stroke: var(--ut-amber);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 0.01 10.36;
+  opacity: 0.85;
+}
+.ut-runners {
+  stroke: #ffffff;
+  stroke-width: 2;
+  stroke-dasharray: 60 120 20 260 8 400 30 283;
+  opacity: 0.75;
+}
+
+.ut-arc { fill: none; stroke-width: 16; }
+.ut-arc-halo { stroke-width: 38; opacity: 0.2; }
+/* Circumference 1080.7. The white arc runs from twelve o'clock clockwise,
+   the orange one from six — the reference's upper-right and lower-left. */
+.ut-arc-white { stroke: #f4f4f4; stroke-dasharray: 250 830.7; stroke-dashoffset: 270; }
+.ut-arc-orange { stroke: #ff8a14; stroke-dasharray: 300 780.7; stroke-dashoffset: -270; }
+
+.ut-segments { stroke: var(--ut-graphite); stroke-width: 10; stroke-dasharray: 12 4; opacity: 0.75; }
+/* A run of five lit segments, the same 12/4 rhythm, circumference 980. */
+.ut-segments-lit { stroke: #ffb35c; stroke-width: 10; stroke-dasharray: 12 4 12 4 12 4 12 4 12 904; }
+
+.ut-thin { stroke: var(--ut-orange); stroke-width: 1.6; opacity: 0.9; }
+.ut-thin-dashed { stroke-dasharray: 3 5; opacity: 0.6; }
+
+/* Pulses of light travelling round the inner rings. */
+.ut-comet {
+  fill: none;
+  stroke: #ffd29a;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-dasharray: 90 808.5;
+  animation: utComet 2.8s linear infinite;
+}
+.ut-comet-rev {
+  stroke: #ff9a3c;
+  stroke-dasharray: 60 775.7;
+  animation: utCometRev 4.2s linear infinite;
+}
+@keyframes utComet {
+  from { stroke-dashoffset: 898.5; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes utCometRev {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: 835.7; }
+}
+
+.ut-disc { stroke: rgba(255, 122, 0, 0.35); stroke-width: 1; }
+
+/* A ring of light leaving the disc every few seconds. */
+.ut-shock {
+  fill: none;
+  stroke: #ff9a3c;
+  stroke-width: 2;
+  opacity: 0;
+  animation: utShock 3.6s ease-out 1.2s infinite;
+}
+@keyframes utShock {
+  0% { transform: scale(1); opacity: 0.85; }
+  100% { transform: scale(1.62); opacity: 0; }
+}
+
+.ut-spin-slow { animation: utSpin 70s linear infinite; }
+.ut-spin-rev { animation: utSpin 46s linear infinite reverse; }
+.ut-spin-mid { animation: utSpin 28s linear infinite; }
+.ut-spin-fast { animation: utSpin 7s linear infinite; }
+@keyframes utSpin { to { transform: rotate(360deg); } }
+
+/*
+ * The logo itself is never altered. The file carries transparent space above
+ * the mark (its visible part spans y 310–895 of 921), so the extra -15.4% of
+ * its own height centres what you actually see in the ring.
+ */
+.ut-logo {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52%;
+  height: auto;
+  transform: translate(-50%, -65.4%);
+  user-select: none;
+  pointer-events: none;
+}
+.ut-logo-glow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 60%;
+  height: 36%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 122, 0, 0.55), rgba(255, 122, 0, 0));
+  transform: translate(-50%, -50%);
+  animation: utGlow 3.2s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes utGlow {
+  0%, 100% { opacity: 0.35; transform: translate(-50%, -50%) scale(0.92); }
+  50% { opacity: 0.85; transform: translate(-50%, -50%) scale(1.06); }
+}
+
+/* -- checklist ------------------------------------------------------------ */
+
+.ut-steps {
+  position: absolute;
+  left: clamp(16px, 4.2vw, 80px);
+  top: var(--ut-cy);
+  width: clamp(250px, 27vw, 440px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  transform: translateY(-50%);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: clamp(10px, 0.92vw, 14px);
+  letter-spacing: 0.05em;
+  color: #dadada;
+}
+.ut-step {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  line-height: 2.3;
+  opacity: 0;
+  animation: utStepIn 0.45s ease forwards;
+}
+@keyframes utStepIn {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: none; }
+}
+.ut-step-caret { color: var(--ut-amber); }
+.ut-step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ut-step-leader {
+  flex: 1;
+  min-width: 1.5em;
+  border-bottom: 1px dotted rgba(220, 220, 220, 0.4);
+  transform: translateY(-0.3em);
+}
+.ut-step-status { min-width: 2.6em; text-align: right; white-space: nowrap; }
+.ut-step[data-state='wait'] { color: #7c7c7c; }
+.ut-step[data-state='ok'] .ut-step-status { color: var(--ut-orange); text-shadow: 0 0 8px rgba(255, 122, 0, 0.7); }
+.ut-step[data-state='warn'] .ut-step-status { color: #ffc46b; }
+.ut-step[data-state='fail'] .ut-step-status { color: #ff5a4a; }
+.ut-step[data-state='na'] .ut-step-status { color: #8a8a8a; }
+.ut-step-running { color: var(--ut-amber); animation: utBlink 0.9s steps(2) infinite; }
+@keyframes utBlink { 50% { opacity: 0.25; } }
+
+/* -- narrow and portrait windows: checklist moves under the core ---------- */
+
+@media (max-width: 900px), (max-aspect-ratio: 1 / 1) {
+  .ut-boot { --ut-core: min(60vmin, 440px); --ut-cy: 44%; }
+  .ut-header { top: 3vh; }
+  .ut-steps {
+    left: 50%;
+    top: auto;
+    bottom: 3vh;
+    width: min(92vw, 440px);
+    transform: translateX(-50%);
+    font-size: clamp(10px, 2.6vw, 13px);
+    /* Here the list sits over the field of lights; a dark plate keeps it legible. */
+    padding: 0.6em 0.9em;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.72);
+    box-shadow: 0 0 24px 12px rgba(0, 0, 0, 0.72);
+  }
+  .ut-step { line-height: 2; }
+  .ut-floor { height: 30%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ut-boot *,
+  .ut-boot *::before,
+  .ut-boot *::after {
+    animation: none !important;
+  }
+  .ut-step { opacity: 1; }
 }
 
 @media (max-width: 900px) {

@@ -210,6 +210,28 @@ function defined<T extends object>(patch: T | undefined): Partial<T> {
  */
 const MAX_ORBITS = 8
 
+/**
+ * The start-up checklist on the boot screen. Each step is set by the code that
+ * actually does the work (App.tsx's ignite), so the screen never claims
+ * something it has not checked:
+ *   wait — not started    run — in progress    ok — done and verified
+ *   warn — done, degraded (e.g. the browser voice instead of Piper)
+ *   fail — tried and failed    na — nothing to check in this app
+ */
+export type BootStepState = 'wait' | 'run' | 'ok' | 'warn' | 'fail' | 'na'
+export type BootStepId = 'modules' | 'system' | 'voice' | 'mic' | 'database' | 'services' | 'launch'
+export type BootStep = { state: BootStepState; note?: string }
+
+const initialBootSteps = (): Record<BootStepId, BootStep> => ({
+  modules: { state: 'wait' },
+  system: { state: 'wait' },
+  voice: { state: 'wait' },
+  mic: { state: 'wait' },
+  database: { state: 'wait' },
+  services: { state: 'wait' },
+  launch: { state: 'wait' },
+})
+
 type State = {
   phase: Phase
   /** 0..1 mic loudness, drives the reactor pulse. */
@@ -230,6 +252,8 @@ type State = {
   looking: string | null
   /** Transient status line during boot, e.g. the voice model download. */
   bootNote: string
+  /** The boot screen's checklist — see BootStepState. */
+  bootSteps: Record<BootStepId, BootStep>
   /** Cards currently on the display, newest last. */
   panels: Panel[]
   /** Blades currently open, newest last — which is also front-most. */
@@ -245,6 +269,8 @@ type State = {
   setGestures: (on: boolean) => void
   setLooking: (why: string | null) => void
   setBootNote: (n: string) => void
+  setBootStep: (id: BootStepId, state: BootStepState, note?: string) => void
+  resetBootSteps: () => void
   pushPanel: (p: Panel) => void
   clearPanels: () => void
   pushBlade: (b: Blade) => void
@@ -286,12 +312,16 @@ export const useStore = create<State>((set) => ({
   focusedBlade: null,
   expandedBlade: null,
   bootNote: '',
+  bootSteps: initialBootSteps(),
   ui: defaultUi(),
 
   setVoice: (voice) => set({ voice }),
   setGestures: (gestures) => set({ gestures }),
   setLooking: (looking) => set({ looking }),
   setBootNote: (bootNote) => set({ bootNote }),
+  setBootStep: (id, state, note) =>
+    set((s) => ({ bootSteps: { ...s.bootSteps, [id]: { state, note } } })),
+  resetBootSteps: () => set({ bootSteps: initialBootSteps() }),
   // Three is as many as fits around the reactor without crowding it. Sticky
   // panels are exempt from the cull — the tool description promises they stay
   // until replaced, and a plain slice(-3) silently evicted them the moment a

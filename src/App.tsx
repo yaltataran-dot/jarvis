@@ -37,7 +37,7 @@ import {
   usingBridge,
   type Msg,
 } from './lib/brain'
-import { startAnalyser, micLevel } from './lib/audio'
+import { getMic, startAnalyser, micLevel } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
 import { trace } from './lib/bridge'
 import { env } from './config'
@@ -411,6 +411,13 @@ export default function App() {
 
   const ignite = async () => {
     const s = store.getState()
+    // The boot screen's checklist. Every step below is marked by the code that
+    // does the work, so it shows only what has actually been checked.
+    const step = s.setBootStep
+    s.resetBootSteps()
+    // Running this at all means the application's modules have loaded.
+    step('modules', 'ok')
+    step('system', 'run')
 
     // Must happen inside the click handler — browsers won't start an
     // AudioContext or speech synthesis without a user gesture.
@@ -426,6 +433,30 @@ export default function App() {
     music.startAmbient()
 
     s.setPhase('boot')
+
+    // The checks that can run alongside the boot sequence. None of them
+    // delays it; each only reports.
+    //
+    // There is no database in this application, so that line says so rather
+    // than claiming a check that never ran.
+    step('database', 'na')
+    // The bridge says which voice it speaks with: Piper (or ElevenLabs) is
+    // the real voice module; without it the browser's own voice is a fallback.
+    step('voice', 'run')
+    void probeCapabilities().then((c) =>
+      c.ttsEngine ? step('voice', 'ok') : step('voice', 'warn', 'СИСТ. ГОЛОС'),
+    )
+    // The shared microphone stream — the same one the clap detector already
+    // opened, so this asks for nothing new. A live audio track is the check.
+    step('mic', 'run')
+    void getMic().then(
+      (m) =>
+        m.getAudioTracks().some((t) => t.readyState === 'live')
+          ? step('mic', 'ok')
+          : step('mic', 'fail', 'НЕТ СИГНАЛА'),
+      (err: unknown) =>
+        step('mic', 'fail', (err as DOMException)?.name === 'NotAllowedError' ? 'НЕТ ДОСТУПА' : 'НЕ НАЙДЕН'),
+    )
 
     watchServers((servers) => store.getState().setConnected(servers))
     watchPanels((panel) => store.getState().pushPanel(panel))
@@ -527,7 +558,21 @@ export default function App() {
           .setError('Bridge reconnected. The previous conversation was not kept.')
       }
     })
-    const warming = warm().catch((err: Error) => s.setError(err.message))
+    // Everything the boot itself sets up is registered by now.
+    step('system', 'ok')
+    // The bridge: the socket open and the agent session starting. The direct
+    // backend has no services to connect to.
+    step('services', usingBridge ? 'run' : 'na')
+    step('launch', 'run')
+    const warming = warm().then(
+      () => {
+        if (usingBridge) step('services', 'ok')
+      },
+      (err: Error) => {
+        s.setError(err.message)
+        step('services', 'fail', 'НЕТ СВЯЗИ')
+      },
+    )
 
     if (!usingBridge && !env.anthropicKey) {
       s.setError(
@@ -553,10 +598,10 @@ export default function App() {
       }, 200)
     }
 
-    // Long enough for the four-beat start-up sequence in Boot.tsx to play —
-    // status bar, rings, suit schematic, reactor power-up — before the live
-    // interface takes over. Kept a touch under the boot cue so the music is
-    // still rising as the reactor lands.
+    // Long enough for the start-up screen in Boot.tsx to play — the bar
+    // filling, the rings spinning up, the checklist resolving — before the
+    // live interface takes over. Kept a touch under the boot cue so the music
+    // is still rising as it hands over.
     await new Promise((r) => setTimeout(r, 9200)) // boot sequence
     await warming
     store.getState().setConnected(connectedLabels())
@@ -578,10 +623,13 @@ export default function App() {
     // Ask the bridge which speech engines exist before the loop starts, so the
     // first turn already uses ElevenLabs when a key is present and the browser
     // fallback when it is not — no flag, no reload.
-    await probeCapabilities()
+    const voiceCaps = await probeCapabilities()
     // Again, now that the bridge has said whether it speaks: the label set
     // above could only name the browser voice.
     store.getState().setVoice(currentVoiceName())
+    // And the checklist follows this answer — the one the voice loop runs on.
+    if (voiceCaps.ttsEngine) step('voice', 'ok')
+    else step('voice', 'warn', 'СИСТ. ГОЛОС')
 
     // One voice loop, started once, running until the page closes.
     voice.current = await startVoice({
@@ -593,6 +641,9 @@ export default function App() {
       onError: onVoiceError,
     })
 
+    // The voice loop is up: the start-up is done. Marked before the phase
+    // changes, so the boot screen fades out showing it.
+    step('launch', 'ok')
     store.getState().setPhase('dormant')
 
     // He has introduced himself, so the next move is the user's: once the

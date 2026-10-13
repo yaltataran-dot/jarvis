@@ -52,7 +52,20 @@ export function capabilitiesProbed(): boolean {
  * engine. Never throws: a failed probe simply leaves the browser fallback in
  * place, which is the correct behaviour when the bridge is unreachable.
  */
-export async function probeCapabilities(): Promise<Capabilities> {
+export function probeCapabilities(): Promise<Capabilities> {
+  // Callers that overlap share one request. The greeting and the boot screen
+  // both ask at power-up; with a request each, one could time out under the
+  // start-up load while the other succeeded, and the two disagreed about which
+  // voice was in use.
+  inflight ??= probe().finally(() => {
+    inflight = null
+  })
+  return inflight
+}
+
+let inflight: Promise<Capabilities> | null = null
+
+async function probe(): Promise<Capabilities> {
   if (BACKEND !== 'bridge') {
     // No bridge to ask. Direct mode has no server-side speech, so browser only.
     current = NONE
