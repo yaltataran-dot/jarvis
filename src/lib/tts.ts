@@ -414,7 +414,77 @@ type Item = {
   audio?: Promise<string | null> | null
 }
 
-export function createSpeaker(): Speaker {
+/**
+ * How a speaker delivers. 'normal' is every answer. 'announce' is the start-up
+ * greeting: the bridge renders it with livelier piper settings (see STYLES in
+ * bridge/piper.mjs) and it plays through announceChain below.
+ */
+export type SpeechStyle = 'normal' | 'announce'
+
+/**
+ * Presence for the start-up greeting — the difference between a voice in the
+ * room and a voice coming on: rumble cut, a little chest, a lift where the
+ * consonants live, a compressor holding it level and forward, and a short,
+ * quiet room behind it. Nothing here changes the words or their timing, so
+ * clarity is untouched; the room is a tenth of the signal and under half a
+ * second long for the same reason. Web Audio only — no dependency.
+ */
+let roomImpulse: AudioBuffer | null = null
+
+/** A short decaying noise burst — a small hard room. Made once per page. */
+function makeRoom(ctx: BaseAudioContext, seconds: number): AudioBuffer {
+  const length = Math.floor(ctx.sampleRate * seconds)
+  const buffer = ctx.createBuffer(2, length, ctx.sampleRate)
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buffer.getChannelData(ch)
+    for (let i = 0; i < length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 3)
+  }
+  return buffer
+}
+
+export function announceChain(ctx: BaseAudioContext, input: AudioNode): AudioNode {
+  const rumble = ctx.createBiquadFilter()
+  rumble.type = 'highpass'
+  rumble.frequency.value = 80
+  const chest = ctx.createBiquadFilter()
+  chest.type = 'lowshelf'
+  chest.frequency.value = 180
+  chest.gain.value = 2
+  const presence = ctx.createBiquadFilter()
+  presence.type = 'peaking'
+  presence.frequency.value = 3000
+  presence.Q.value = 0.9
+  presence.gain.value = 3
+  const level = ctx.createDynamicsCompressor()
+  level.threshold.value = -22
+  level.knee.value = 6
+  level.ratio.value = 3
+  level.attack.value = 0.003
+  level.release.value = 0.15
+  const makeup = ctx.createGain()
+  makeup.gain.value = 1.3
+
+  roomImpulse ??= makeRoom(ctx, 0.45)
+  const room = ctx.createConvolver()
+  room.buffer = roomImpulse
+  const wet = ctx.createGain()
+  wet.gain.value = 0.1
+  const out = ctx.createGain()
+
+  input.connect(rumble)
+  rumble.connect(chest)
+  chest.connect(presence)
+  presence.connect(level)
+  level.connect(makeup)
+  makeup.connect(out)
+  makeup.connect(room)
+  room.connect(wet)
+  wet.connect(out)
+  return out
+}
+
+export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
+  const style: SpeechStyle = options.style ?? 'normal'
   const queue: Item[] = []
   let buffer = ''
   let cancelled = false
@@ -473,7 +543,7 @@ export function createSpeaker(): Speaker {
       // ElevenLabs, which makes the one field naming the engine useless
       // exactly when you are trying to work out which engine is at fault.
       diag.engine = caps().ttsEngine ?? 'elevenlabs'
-      return fetchCloudAudio(text).catch(() => null)
+      return fetchCloudAudio(text, style).catch(() => null)
     }
     if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
       diag.engine = 'kokoro'
@@ -537,7 +607,7 @@ export function createSpeaker(): Speaker {
         diag.engine = 'elevenlabs'
         console.warn('[jarvis] system voice is not producing sound — using the bridge speech proxy from here on')
       }
-      const rescue = await fetchCloudAudio(item.text).catch(() => null)
+      const rescue = await fetchCloudAudio(item.text, style).catch(() => null)
       if (rescue && !cancelled) {
         diag.rescued++
         await playUrl(rescue, item.text)
@@ -571,7 +641,8 @@ export function createSpeaker(): Speaker {
       // Deliberate, and deliberately invariant — the character's pace does not
       // change with stakes, and that steadiness is most of the effect. This
       // lands around 130 wpm, below the median for film dialogue.
-      u.rate = 0.92
+      // …except the start-up greeting, which is meant to sound like switching on.
+      u.rate = style === 'announce' ? 1 : 0.92
       // Mid-baritone, and *not* pushed lower for gravitas. The voice is
       // clarity-weighted rather than chest-weighted; dropping it further reads
       // as a film-trailer voiceover, which is the wrong character entirely.
@@ -694,7 +765,9 @@ export function createSpeaker(): Speaker {
         try {
           const analyser = ctx.createAnalyser()
           analyser.fftSize = 256
-          ctx.createMediaElementSource(audio).connect(analyser)
+          const source = ctx.createMediaElementSource(audio)
+          const voiced = style === 'announce' ? announceChain(ctx, source) : source
+          voiced.connect(analyser)
           analyser.connect(ctx.destination)
           const bins = new Uint8Array(analyser.frequencyBinCount)
           read = () => {
@@ -806,14 +879,14 @@ export function createSpeaker(): Speaker {
 
 /** Only used when USE_ELEVENLABS is on. Bridge proxy first (it already holds
  *  the key), then a direct key, then null to fall back to the native voice. */
-async function fetchCloudAudio(text: string): Promise<string | null> {
+async function fetchCloudAudio(text: string, style: SpeechStyle = 'normal'): Promise<string | null> {
   if (BACKEND === 'bridge') {
     try {
       const res = await fetch(`${BRIDGE_HTTP_URL}/tts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         // The voice matters only to Piper; ElevenLabs uses the bridge's own.
-        body: JSON.stringify({ text, voice: piperVoice() }),
+        body: JSON.stringify({ text, voice: piperVoice(), style }),
       })
       if (res.ok) return URL.createObjectURL(await res.blob())
     } catch {

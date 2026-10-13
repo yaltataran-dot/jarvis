@@ -64,19 +64,14 @@ test('a long unpunctuated run is cut at a comma, not mid-phrase', () => {
   assert.ok(sentences[0].endsWith(','), `cut mid-phrase: "…${sentences[0].slice(-30)}"`)
 })
 
-test('the start-up greeting is cut into its four sentences and spoken as written', async () => {
+test('the start-up greeting is cut into its two sentences and spoken as written', async () => {
   const { prepareForSpeech } = await import('../src/lib/speechText.ts')
   // Kept in step with STARTUP_GREETING in src/lib/fillers.ts.
-  const greeting =
-    'Здравствуйте! Я Юг-Трансфер, ваш персональный голосовой помощник. ' +
-    'Система успешно запущена и готова к работе. Чем могу помочь?'
+  const greeting = 'Здравствуйте! Я Юг-Трансфер, ваш персональный голосовой помощник.'
   const pieces = stream(greeting)
-  assert.deepEqual(pieces, [
-    'Здравствуйте!',
-    'Я Юг-Трансфер, ваш персональный голосовой помощник.',
-    'Система успешно запущена и готова к работе.',
-    'Чем могу помочь?',
-  ])
+  assert.deepEqual(pieces, ['Здравствуйте!', 'Я Юг-Трансфер, ваш персональный голосовой помощник.'])
+  // Both fit the bridge's cache (64 characters), so every power-up after the first is instant.
+  for (const p of pieces) assert.ok(p.length <= 64, `${p.length} characters: "${p}"`)
   // Nothing in it is rewritten for the voice — the name included.
   for (const p of pieces) assert.equal(prepareForSpeech(p, 'ru'), p)
 })

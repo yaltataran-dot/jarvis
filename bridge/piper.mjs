@@ -66,6 +66,36 @@ const NOISE_W = num(process.env.JARVIS_PIPER_NOISE_W, 0.9)
 const SENTENCE_SILENCE = num(process.env.JARVIS_PIPER_SENTENCE_SILENCE, 0.22)
 
 /**
+ * Delivery per style. 'normal' is every answer. 'announce' is the start-up
+ * greeting, which should sound like something switching on rather than
+ * something answering.
+ *
+ * Measured on the greeting, six renders each (piper's noise makes every render
+ * a little different, so single renders prove nothing):
+ *
+ *   normal    0.94 / 0.667 / 0.9   pitch range p10–p90 6.9 ± 1.2 semitones, 117 Hz
+ *   announce  0.90 / 0.8   / 1.0   pitch range p10–p90 9.1 ± 1.2 semitones, 121 Hz
+ *
+ * noise_scale is the variation the model is allowed in its prosody; 0.8 is
+ * still well short of the 1.0+ where piper starts producing artefacts.
+ * Piper takes these only on the command line — per-line JSON values are
+ * ignored, which was checked — so the style is its own process.
+ */
+const STYLES = {
+  normal: { lengthScale: LENGTH_SCALE, noiseScale: NOISE_SCALE, noiseW: NOISE_W, sentenceSilence: SENTENCE_SILENCE },
+  announce: { lengthScale: 0.9, noiseScale: 0.8, noiseW: 1.0, sentenceSilence: 0.15 },
+}
+
+/** Anything unrecognised is an ordinary answer. */
+export const piperStyle = (style) => (style === 'announce' ? 'announce' : 'normal')
+
+/**
+ * The announcer speaks once per power-up and its lines are then cached, so it
+ * does not keep a second model in memory: it unloads after this long idle.
+ */
+const ANNOUNCE_IDLE_MS = 30_000
+
+/**
  * Best-first, for the character: a calm male voice. RUSLAN is a 31-hour
  * single-speaker studio corpus, the largest of the Russian voices, and it
  * shows in the prosody. The rest follow so that whichever one is installed is
@@ -120,23 +150,25 @@ const outputDir = () => {
   return outDir
 }
 
-/** One running piper process for one voice. */
+/** One running piper process for one voice in one style. */
 class Worker {
-  constructor(voice) {
+  constructor(voice, style = 'normal') {
     this.voice = voice
+    this.style = style
     this.pending = new Map() // output path -> { resolve, reject, timer }
     this.seq = 0
     this.buffer = ''
+    const s = STYLES[style]
     this.proc = spawn(
       EXE,
       [
         '--model', join(VOICES_DIR, `${voice}.onnx`),
         '--json-input',
         '--output_dir', outputDir(),
-        '--length_scale', String(LENGTH_SCALE),
-        '--noise_scale', String(NOISE_SCALE),
-        '--noise_w', String(NOISE_W),
-        '--sentence_silence', String(SENTENCE_SILENCE),
+        '--length_scale', String(s.lengthScale),
+        '--noise_scale', String(s.noiseScale),
+        '--noise_w', String(s.noiseW),
+        '--sentence_silence', String(s.sentenceSilence),
       ],
       // piper looks for espeak-ng-data and onnxruntime next to itself.
       { cwd: join(PIPER_DIR, 'piper'), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
@@ -193,7 +225,7 @@ class Worker {
   synth(text) {
     return new Promise((resolve, reject) => {
       if (!this.alive) return reject(new Error('piper is not running'))
-      const path = join(outputDir(), `${process.pid}-${this.voice}-${++this.seq}.wav`)
+      const path = join(outputDir(), `${process.pid}-${this.voice}-${this.style}-${++this.seq}.wav`)
       const timer = setTimeout(() => {
         this.pending.delete(path)
         reject(new Error('piper timed out'))
@@ -207,16 +239,31 @@ class Worker {
 }
 
 /**
- * Only one voice is kept loaded. Each process holds its model in memory, and
- * switching voices with V is an audition, not something done mid-sentence.
+ * One process per style, each holding one voice. Each holds its model in
+ * memory, and switching voices with V is an audition, not something done
+ * mid-sentence — so a voice change replaces the style's process.
  */
-let worker = null
+const workers = { normal: null, announce: null }
+let announceIdle = null
 
-function workerFor(voice) {
-  if (worker?.alive && worker.voice === voice) return worker
-  worker?.die(new Error('voice changed'))
-  worker = new Worker(voice)
-  return worker
+function workerFor(voice, style = 'normal') {
+  const current = workers[style]
+  if (current?.alive && current.voice === voice) return current
+  current?.die(new Error('voice changed'))
+  workers[style] = new Worker(voice, style)
+  return workers[style]
+}
+
+/** Unload the announcer once it has been quiet for a while. */
+function scheduleAnnouncerUnload() {
+  if (announceIdle) clearTimeout(announceIdle)
+  announceIdle = setTimeout(() => {
+    announceIdle = null
+    workers.announce?.die(new Error('idle'))
+    workers.announce = null
+  }, ANNOUNCE_IDLE_MS)
+  // Never the reason the bridge (or a test run) stays alive.
+  announceIdle.unref?.()
 }
 
 /** Load the default voice now, so the first sentence does not pay for it. */
@@ -242,23 +289,29 @@ const CACHE_MAX_ENTRIES = 64
 const CACHE_MAX_CHARS = 64
 const cache = new Map()
 
-const synthesise = async (chosen, text) => {
+const synthesise = async (chosen, text, style) => {
   try {
-    return await workerFor(chosen).synth(text)
+    return await workerFor(chosen, style).synth(text)
   } catch (err) {
-    if (worker?.alive) throw err
-    return workerFor(chosen).synth(text)
+    if (workers[style]?.alive) throw err
+    return workerFor(chosen, style).synth(text)
+  } finally {
+    if (style === 'announce') scheduleAnnouncerUnload()
   }
 }
 
-/** Synthesise one line to a WAV buffer. Retries once on a dead process. */
-export async function piperSpeak(text, lang, voice) {
+/**
+ * Synthesise one line to a WAV buffer. Retries once on a dead process.
+ * `style` is 'normal' (every answer) or 'announce' (the start-up greeting).
+ */
+export async function piperSpeak(text, lang, voice, style = 'normal') {
   const voices = piperVoices(lang)
   const chosen = voice && voices.includes(voice) ? voice : defaultPiperVoice(lang)
   if (!chosen) throw new Error('no piper voice installed')
-  if (text.length > CACHE_MAX_CHARS) return synthesise(chosen, text)
+  style = piperStyle(style)
+  if (text.length > CACHE_MAX_CHARS) return synthesise(chosen, text, style)
 
-  const key = `${chosen}\n${text}`
+  const key = `${chosen}\n${style}\n${text}`
   const hit = cache.get(key)
   if (hit) {
     // Re-insert, so the map's order is least recently used first.
@@ -266,16 +319,20 @@ export async function piperSpeak(text, lang, voice) {
     cache.set(key, hit)
     return hit
   }
-  const wav = await synthesise(chosen, text)
+  const wav = await synthesise(chosen, text, style)
   cache.set(key, wav)
   if (cache.size > CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value)
   return wav
 }
 
-/** Unload the voice. The bridge never needs this; the tests do, to exit. */
+/** Unload every voice. The bridge never needs this; the tests do, to exit. */
 export function stopPiper() {
-  worker?.die(new Error('stopped'))
-  worker = null
+  if (announceIdle) clearTimeout(announceIdle)
+  announceIdle = null
+  for (const style of Object.keys(workers)) {
+    workers[style]?.die(new Error('stopped'))
+    workers[style] = null
+  }
 }
 
 process.on('exit', stopPiper)

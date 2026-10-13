@@ -947,8 +947,10 @@ const handleRequest = async (req, res) => {
     // so a malformed body used to take the entire bridge down with it.
     let text
     let voice
+    // 'announce' for the start-up greeting; anything else is an answer.
+    let style
     try {
-      ;({ text, voice } = JSON.parse(body || '{}'))
+      ;({ text, voice, style } = JSON.parse(body || '{}'))
     } catch {
       res.writeHead(400, cors)
       return res.end('bad json')
@@ -962,7 +964,12 @@ const handleRequest = async (req, res) => {
     // only once the sentence is done, and a sentence is a few hundred ms.
     const speakLocally = async () => {
       try {
-        const wav = await piperSpeak(text, LANG, typeof voice === 'string' ? voice : null)
+        const wav = await piperSpeak(
+          text,
+          LANG,
+          typeof voice === 'string' ? voice : null,
+          typeof style === 'string' ? style : 'normal',
+        )
         res.writeHead(200, {
           ...cors,
           'content-type': 'audio/wav',

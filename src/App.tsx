@@ -387,18 +387,26 @@ export default function App() {
    * Windows' Pavel rather than the Piper voice everything else uses. Not
    * awaited by the boot — the reactor comes up while he talks, as it did under
    * the recording. Waking him cuts it off (see onWake).
+   *
+   * Resolves true only if the greeting was heard to the end. Anything that
+   * cuts it off — Escape, waking him — goes through silence(), which takes it
+   * off speaker.current first, so it is still ours here only if it finished.
    */
-  const greetOnStartup = async (text: string) => {
+  const greetOnStartup = async (text: string): Promise<boolean> => {
     await probeCapabilities()
     // Something else already has the floor — never two voices at once.
-    if (speaker.current) return
-    const greeting = createSpeaker()
+    if (speaker.current) return false
+    // The announce style: livelier piper settings and a presence chain — see
+    // SpeechStyle in tts.ts.
+    const greeting = createSpeaker({ style: 'announce' })
     speaker.current = greeting
     // push, not say: cut into sentences, the first is heard while the rest
     // are still being generated.
     greeting.push(`${text} `)
     await greeting.end()
-    if (speaker.current === greeting) speaker.current = null
+    if (speaker.current !== greeting) return false
+    speaker.current = null
+    return true
   }
 
   const ignite = async () => {
@@ -413,8 +421,8 @@ export default function App() {
     music.enable()
     // The recorded intro is English; in Russian mode he greets in his own
     // voice instead. See STARTUP_GREETING in fillers.ts.
-    if (STARTUP_GREETING) void greetOnStartup(STARTUP_GREETING)
-    else music.playBoot()
+    const greeted = STARTUP_GREETING ? greetOnStartup(STARTUP_GREETING) : Promise.resolve(false)
+    if (!STARTUP_GREETING) music.playBoot()
     music.startAmbient()
 
     s.setPhase('boot')
@@ -586,6 +594,16 @@ export default function App() {
     })
 
     store.getState().setPhase('dormant')
+
+    // He has introduced himself, so the next move is the user's: once the
+    // greeting has been heard to the end, open the microphone for them to
+    // speak without his name, as after any answer. Not while it is still
+    // playing — in command mode the microphone would take his own voice as the
+    // question — and not if it was cut off, or if he has been woken some other
+    // way in the meantime.
+    void greeted.then((finished) => {
+      if (finished && store.getState().phase === 'dormant') listen(AWAIT_SPEECH_MS)
+    })
   }
 
   // -- clap to start --------------------------------------------------------

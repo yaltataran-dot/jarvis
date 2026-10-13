@@ -79,12 +79,13 @@ const ACKNOWLEDGE = tr(
  * voice cannot be taken out of the file. In Russian mode the file is not
  * played and this line is spoken instead; null keeps the recording, which is
  * what English mode does.
+ *
+ * Two short sentences, delivered in the 'announce' style — a switching-on,
+ * not a conversation. No question at the end: the microphone opening straight
+ * after it (see App.tsx) is the invitation.
  */
 export const STARTUP_GREETING: string | null =
-  LANG === 'ru'
-    ? 'Здравствуйте! Я Юг-Трансфер, ваш персональный голосовой помощник. ' +
-      'Система успешно запущена и готова к работе. Чем могу помочь?'
-    : null
+  LANG === 'ru' ? 'Здравствуйте! Я Юг-Трансфер, ваш персональный голосовой помощник.' : null
 
 /** Answering to his name, before the user has said what they want. */
 const ATTENTION = tr(

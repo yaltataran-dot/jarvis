@@ -38,6 +38,22 @@ test('a repeated short line comes from the cache', { skip: !voices.length && 'no
   assert.equal(again, first)
 })
 
+test('the announce style is its own rendering, and cached apart from answers', { skip: !voices.length && 'no piper voice installed' }, async () => {
+  const line = 'Здравствуйте!'
+  const normal = await piperSpeak(line, 'ru', null, 'normal')
+  const announce = await piperSpeak(line, 'ru', null, 'announce')
+  assert.equal(announce.subarray(0, 4).toString('ascii'), 'RIFF')
+  // Different settings, different audio — not the normal line served from the cache.
+  assert.notEqual(announce, normal)
+  assert.ok(!announce.equals(normal), 'announce returned the normal rendering')
+  // And the announcer's own repeat is cached.
+  const t0 = Date.now()
+  assert.equal(await piperSpeak(line, 'ru', null, 'announce'), announce)
+  assert.ok(Date.now() - t0 < 20, 'announce line not cached')
+  // An unknown style is an ordinary answer.
+  assert.equal(await piperSpeak(line, 'ru', null, 'shout'), normal)
+})
+
 test('an unknown voice falls back to the default', { skip: !voices.length && 'no piper voice installed' }, async () => {
   const wav = await piperSpeak('Проверка.', 'ru', 'no-such-voice')
   assert.equal(wav.subarray(0, 4).toString('ascii'), 'RIFF')
