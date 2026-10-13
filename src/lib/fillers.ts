@@ -17,36 +17,64 @@
  *     so it goes at the end, and only sometimes.
  */
 
+import { LANG } from '../config'
+
+/**
+ * Every pool comes in both languages; LANG picks one. The Russian lines keep
+ * the same grammar where Russian allows it: short, impersonal, "сэр" at the
+ * end and only sometimes, no "сию минуту" eagerness.
+ */
+const tr = (en: string[], ru: string[]) => (LANG === 'ru' ? ru : en)
+
 /** Said as soon as the first tool fires, before any answer exists. */
-const WORKING = [
-  'Working on it, sir.',
-  'Compiling.',
-  'Retrieving.',
-  'Accessing the archive.',
-  'Cross-referencing.',
-  'Running the query now.',
-  'Searching.',
-  'Under way.',
-]
+const WORKING = tr(
+  [
+    'Working on it, sir.',
+    'Compiling.',
+    'Retrieving.',
+    'Accessing the archive.',
+    'Cross-referencing.',
+    'Running the query now.',
+    'Searching.',
+    'Under way.',
+  ],
+  [
+    'Работаю, сэр.',
+    'Собираю данные.',
+    'Извлекаю.',
+    'Обращаюсь к архиву.',
+    'Сверяю.',
+    'Выполняю запрос.',
+    'Ищу.',
+    'Приступаю.',
+  ],
+)
 
 /** Acknowledging an order where no tool is involved. */
-const ACKNOWLEDGE = [
-  'As you wish, sir.',
-  'Very good, sir.',
-  'Certainly.',
-  'Understood.',
-  'Consider it done.',
-  'Directly, sir.',
-]
+const ACKNOWLEDGE = tr(
+  [
+    'As you wish, sir.',
+    'Very good, sir.',
+    'Certainly.',
+    'Understood.',
+    'Consider it done.',
+    'Directly, sir.',
+  ],
+  [
+    'Как пожелаете, сэр.',
+    'Хорошо, сэр.',
+    'Разумеется.',
+    'Понял.',
+    'Будет сделано.',
+    'Слушаюсь, сэр.',
+  ],
+)
 
 /** Answering to his name, before the user has said what they want. */
-const ATTENTION = [
-  'Yes, sir?',
-  'Sir?',
-  'At your service, sir.',
-  'Standing by.',
-  'Awake, sir.',
-]
+const ATTENTION = tr(
+  ['Yes, sir?', 'Sir?', 'At your service, sir.', 'Standing by.', 'Awake, sir.'],
+  ['Да, сэр?', 'Сэр?', 'К вашим услугам, сэр.', 'Слушаю.', 'На связи, сэр.'],
+)
 
 /**
  * Avoids repeating the same phrase twice running, which is what makes canned
@@ -91,7 +119,10 @@ type Rule = {
   lines: string[]
 }
 
-const FOOTAGE = ['Assembling the footage.', 'Rendering the sequence.']
+const FOOTAGE = tr(
+  ['Assembling the footage.', 'Rendering the sequence.'],
+  ['Монтирую видео.', 'Собираю ролик.'],
+)
 
 const BY_TOOL: Rule[] = [
   // Video sits above image because higgsfield and palmier both do either, so
@@ -101,50 +132,59 @@ const BY_TOOL: Rule[] = [
   {
     server: /higgsfield|openrouter-image|dalle|flux|midjourney/,
     tool: /image|photo|thumbnail|render|upscale|seedream/,
-    lines: ['Rendering.', 'Composing it now.'],
+    lines: tr(['Rendering.', 'Composing it now.'], ['Рисую.', 'Создаю изображение.']),
   },
   // The editors, once the two rules that read the verb have had their turn.
   { server: /palmier|heygen|runway|descript/, lines: FOOTAGE },
   {
     server: /playwright|puppeteer|browserbase|chrome/,
     tool: /\bbrowser\b|navigate/,
-    lines: ['Opening the browser.', 'Navigating.'],
+    lines: tr(['Opening the browser.', 'Navigating.'], ['Открываю браузер.', 'Перехожу на страницу.']),
   },
   {
     server: /android|\badb\b|simulator/,
     tool: /\bdevice\b|\bapk\b|\bphone\b/,
-    lines: ['Reaching the device.', 'Connecting to your phone.'],
+    lines: tr(
+      ['Reaching the device.', 'Connecting to your phone.'],
+      ['Подключаюсь к устройству.', 'Связываюсь с вашим телефоном.'],
+    ),
   },
   {
     server: /gmail|\bmail\b/,
     tool: /gmail|\bmail\b|email|inbox/,
-    lines: ['Checking your mail.', 'Reading the inbox.'],
+    lines: tr(['Checking your mail.', 'Reading the inbox.'], ['Проверяю почту.', 'Читаю входящие.']),
   },
   // Calendar keys off "calendar" alone. "event" used to live here, which is how
   // a Mixpanel event query came out as "Checking your calendar."
   {
     tool: /calendar|\bdiary\b|\bmeeting\b/,
-    lines: ['Checking your calendar.', 'Consulting the diary.'],
+    lines: tr(
+      ['Checking your calendar.', 'Consulting the diary.'],
+      ['Проверяю календарь.', 'Сверяюсь с расписанием.'],
+    ),
   },
   {
     server: /elevenlabs|openai-tts/,
     tool: /speech|\bvoice\b|\btts\b|text_to_sound/,
-    lines: ['Synthesising.', 'Working on it, sir.'],
+    lines: tr(['Synthesising.', 'Working on it, sir.'], ['Синтезирую.', 'Работаю, сэр.']),
   },
   {
     server: /spotify|sonos/,
     tool: /\bplay\b|\bmusic\b|playlist|\btrack\b/,
-    lines: ['Queuing it up.', 'Putting it on.'],
+    lines: tr(['Queuing it up.', 'Putting it on.'], ['Ставлю в очередь.', 'Включаю.']),
   },
   {
     server: /^home|homeassistant|\bhue\b|\bhass\b/,
     tool: /\blights?\b|thermostat|\bdimmer\b/,
-    lines: ['Adjusting it now.', 'Seeing to it, sir.'],
+    lines: tr(['Adjusting it now.', 'Seeing to it, sir.'], ['Настраиваю.', 'Займусь этим, сэр.']),
   },
   {
     server: /github|linear|jira|sentry/,
     tool: /\brepo\b|repository|\bissues?\b|pull_request|\bcommit\b/,
-    lines: ['Checking the repository.', 'Consulting the tracker.'],
+    lines: tr(
+      ['Checking the repository.', 'Consulting the tracker.'],
+      ['Проверяю репозиторий.', 'Смотрю трекер задач.'],
+    ),
   },
   // Also where the anonymously named analytics servers land — theirs are bare
   // UUIDs, so only the tool half says anything: Get-Report, Get-Events,
@@ -153,12 +193,12 @@ const BY_TOOL: Rule[] = [
   {
     server: /mixpanel|clarity|posthog|amplitude/,
     tool: /analytic|\bmetrics?\b|\breports?\b|\bevents?\b|cohort|funnel|dashboard|\bquery\b/,
-    lines: ['Running the query.', 'Pulling the figures.'],
+    lines: tr(['Running the query.', 'Pulling the figures.'], ['Выполняю запрос.', 'Собираю цифры.']),
   },
   {
     server: /\bexa\b|serper|serpapi|perplexity|tavily|brave/,
     tool: /search|\bweb\b|\bfetch\b|crawl|research/,
-    lines: ['Searching.', 'Consulting the record.'],
+    lines: tr(['Searching.', 'Consulting the record.'], ['Ищу.', 'Сверяюсь с источниками.']),
   },
 ]
 
