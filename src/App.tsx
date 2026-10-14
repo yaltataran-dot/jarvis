@@ -198,6 +198,17 @@ export default function App() {
       trace('app:answer', { len: text.length, stale: stale() })
       if (stale()) return
 
+      // An answer that arrived whole, with no streamed deltas, was shown and
+      // spoken by nothing above — the turn ended in silence. Say it now.
+      if (!started && text) {
+        started = true
+        store.getState().setPhase('speaking')
+        store.getState().setActiveTool(null)
+        music.working(false)
+        store.getState().pushTurn({ id: turnId, role: 'jarvis', text })
+        spk.push(text)
+      }
+
       // The bridge keeps conversation state in its own session, so history is
       // only threaded through on the direct path.
       if (!usingBridge) {

@@ -1,6 +1,24 @@
 import type { AskHandlers } from './anthropic'
 import type { Blade, Panel } from '../store'
-import { BRIDGE_WS_URL } from '../config'
+import { BRIDGE_WS_URL, LANG } from '../config'
+
+/** The page's own failure sentences, in the language he answers in. */
+const SAY =
+  LANG === 'ru'
+    ? {
+        quiet: 'Мост замолчал — ответ потерян. Повторите вопрос.',
+        tooLong: 'Ответ так и не пришёл за три минуты. Запрос остановлен.',
+        reported: 'Мост сообщил об ошибке.',
+        closed: 'Связь с мостом прервалась посреди ответа.',
+        failed: 'Не удалось связаться с мостом.',
+      }
+    : {
+        quiet: 'The bridge went quiet — that turn was lost, sir.',
+        tooLong: 'No answer came in three minutes. The turn was stopped.',
+        reported: 'The bridge reported an error.',
+        closed: 'The bridge disconnected mid-answer — that session is gone.',
+        failed: 'The connection to the bridge failed.',
+      }
 
 /**
  * Client for the local bridge (see bridge/server.mjs).
@@ -50,6 +68,8 @@ type Frame = {
   seconds?: number
   when?: string
   servers?: Array<string | { name?: string }>
+  attempt?: number
+  status?: number | null
 }
 
 /** Every question gets an id so its answer can be told from anyone else's. */
@@ -325,6 +345,13 @@ export async function warmBridge(): Promise<void> {
  */
 const IDLE_TIMEOUT_MS = 120_000
 
+/**
+ * However lively the bridge, a turn with no end in three minutes is stopped.
+ * API retries send a frame each, which keeps the idle timer above fed for as
+ * long as Claude Code keeps retrying; this is the ceiling over that.
+ */
+const TURN_LIMIT_MS = 180_000
+
 /** The turn in flight, so a barge-in can settle it locally. */
 let pending: { finish: (fallback?: string) => void } | null = null
 
@@ -389,11 +416,13 @@ export async function ask(
   return new Promise((resolve, reject) => {
     let done = false
     let timer = 0
+    let limit = 0
 
     const cleanup = () => {
       done = true
       pending = null
       clearTimeout(timer)
+      clearTimeout(limit)
       ws.removeEventListener('message', onMessage)
       ws.removeEventListener('close', onClose)
       ws.removeEventListener('error', onError)
@@ -416,7 +445,7 @@ export async function ask(
     const arm = () => {
       clearTimeout(timer)
       timer = window.setTimeout(() => {
-        fail(new Error('The bridge went quiet — that turn was lost, sir.'))
+        fail(new Error(SAY.quiet))
       }, IDLE_TIMEOUT_MS)
     }
 
@@ -463,7 +492,13 @@ export async function ask(
             break
 
           case 'error':
-            fail(new Error(msg.message ?? 'The bridge reported an error.'))
+            fail(new Error(msg.message ?? SAY.reported))
+            break
+
+          // Claude Code retrying a failed API call: nothing to show, but proof
+          // the turn is alive — arm() above has already been fed by it.
+          case 'retry':
+            trace('ask:api-retry', { attempt: msg.attempt ?? 0, status: msg.status ?? 0 })
             break
         }
       } catch (err) {
@@ -472,10 +507,10 @@ export async function ask(
     }
 
     const onClose = () => {
-      fail(new Error('The bridge disconnected mid-answer — that session is gone.'))
+      fail(new Error(SAY.closed))
     }
     const onError = () => {
-      fail(new Error('The connection to the bridge failed.'))
+      fail(new Error(SAY.failed))
     }
 
     pending = { finish }
@@ -483,6 +518,11 @@ export async function ask(
     ws.addEventListener('close', onClose)
     ws.addEventListener('error', onError)
     arm()
+    limit = window.setTimeout(() => {
+      // Stop it on the bridge too, so it isn't still paying for the answer.
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'interrupt' }))
+      fail(new Error(SAY.tooLong))
+    }, TURN_LIMIT_MS)
 
     try {
       trace('ask:sent', { id })

@@ -29,6 +29,7 @@ import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
 import { effortFor } from './effort.mjs'
+import { describeFailure, turnFailed } from './failures.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 
@@ -41,6 +42,16 @@ const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 process.on('unhandledRejection', (err) => {
   console.error('[jarvis] unhandled rejection:', err)
 })
+
+/**
+ * Every log line carries the time. The log is the only record of what a turn
+ * did, and without times a failed answer could not be matched to the voice
+ * test it belonged to — three "turn failed" lines, and no way to say when.
+ */
+for (const level of ['log', 'warn', 'error']) {
+  const write = console[level].bind(console)
+  console[level] = (...args) => write(new Date().toLocaleTimeString('ru-RU', { hour12: false }), ...args)
+}
 
 /**
  * Who is allowed to talk to this bridge.
@@ -1431,9 +1442,20 @@ wss.on('connection', (socket) => {
   let delivery = Promise.resolve()
   let newestAsk = 0
 
+  /**
+   * The turn in flight, for the log: when it went in, the tools it called, and
+   * any API error reported on an assistant message. The summary line written
+   * when it ends is what tells a lost answer apart from a slow one.
+   */
+  let turnStartedAt = 0
+  let turnTools = []
+  let turnApiError = null
+  const turnSeconds = () => (turnStartedAt ? ((Date.now() - turnStartedAt) / 1000).toFixed(1) : '?')
+
   const announceTool = (id, name) => {
     if (!name || (id && seenTools.has(id))) return
     if (id) seenTools.add(id)
+    turnTools.push(name.replace(/^mcp__/, ''))
     // The display tool isn't work being done, it's the HUD drawing itself —
     // announcing it would put "jarvis · display" in the tool badge and trigger
     // a "working on it" filler for something already on screen.
@@ -1586,6 +1608,12 @@ wss.on('connection', (socket) => {
           }
 
           case 'assistant': {
+            // An API failure can arrive as an assistant message carrying an
+            // error kind instead of an answer — remembered for the result.
+            if (msg.error) {
+              turnApiError = msg.error
+              console.warn(`[jarvis] API error on the turn: ${msg.error}`)
+            }
             // Fallback for builds that emit whole assistant messages rather
             // than partial events. Deduped against the stream_event path.
             for (const block of msg.content ?? msg.message?.content ?? []) {
@@ -1616,22 +1644,47 @@ wss.on('connection', (socket) => {
             // empty text is indistinguishable from a turn that simply had
             // nothing to say — the HUD stops spinning and JARVIS stands there
             // silent. Say what happened instead.
-            if (msg.subtype === 'success') {
+            //
+            // Nor is subtype 'success' always one: an API error that ends the
+            // turn — 403 when the VPN drops, a DNS failure — arrives as
+            // 'success' with is_error set and the error as the result text,
+            // never streamed. Passed on as 'done' it was an answer nobody heard.
+            // See failures.mjs.
+            if (!turnFailed(msg, turnApiError)) {
+              console.log(
+                `[jarvis] turn ok in ${turnSeconds()} s` +
+                  (turnTools.length ? ` · tools: ${turnTools.join(', ')}` : ''),
+              )
               sendTurn({
                 type: 'done',
                 text: msg.result ?? '',
                 costUsd: msg.total_cost_usd ?? null,
               })
             } else {
+              const described = describeFailure(msg, turnApiError, LANG)
               console.error(
-                `[jarvis] turn failed: ${msg.subtype}`,
+                `[jarvis] turn failed after ${turnSeconds()} s: ${msg.subtype}` +
+                  ` · is_error=${msg.is_error === true}` +
+                  ` · api_status=${msg.api_error_status ?? 'none'}` +
+                  ` · api_error=${turnApiError ?? 'none'}` +
+                  (turnTools.length ? ` · tools: ${turnTools.join(', ')}` : '') +
+                  (msg.result ? ` · result: ${String(msg.result).slice(0, 300)}` : ''),
                 msg.errors ?? '',
               )
+              // The specific cause when one is known; otherwise the subtype's
+              // own sentence, as before.
+              const generic = describeFailure({ subtype: 'unknown' }, null, LANG)
               sendTurn({
                 type: 'error',
-                message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
+                message:
+                  described !== generic
+                    ? described
+                    : (RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default),
               })
             }
+            turnStartedAt = 0
+            turnTools = []
+            turnApiError = null
             // Whatever was waiting on this turn to finish can go now. This is
             // the only place a turn is genuinely over.
             finishTurn?.()
@@ -1646,6 +1699,17 @@ wss.on('connection', (socket) => {
             break
 
           case 'system':
+            // Claude Code retrying a failed API call. Silent before, so a turn
+            // stuck in retries looked exactly like a slow one. Logged, and a
+            // frame to the page so its wait knows the bridge is still alive.
+            if (msg.subtype === 'api_retry') {
+              console.warn(
+                `[jarvis] API retry ${msg.attempt}/${msg.max_retries} in ${msg.retry_delay_ms} ms` +
+                  ` · status=${msg.error_status ?? 'no response'} · ${msg.error}`,
+              )
+              sendTurn({ type: 'retry', attempt: msg.attempt, max: msg.max_retries, status: msg.error_status ?? null })
+              break
+            }
             if (msg.subtype === 'init') {
               // Servers report 'pending' until first use — they connect
               // lazily — so only drop the ones that are actually unusable.
@@ -1739,6 +1803,9 @@ wss.on('connection', (socket) => {
           }
           answering = id
           turnOpen = true
+          turnStartedAt = Date.now()
+          turnTools = []
+          turnApiError = null
           if (deliver) {
             const resolve = deliver
             deliver = null
