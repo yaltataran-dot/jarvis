@@ -6,6 +6,7 @@ import { caps } from './capabilities'
 import { trace } from './bridge'
 import { L, OVERRIDE, R, STOP_ONLY } from './stopWords'
 import { isEcho, norm } from './echo'
+import { isBargeIn } from './bargeIn'
 
 /**
  * The voice loop.
@@ -758,7 +759,6 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     settled += fresh
     const full = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
     if (!started || (mode === 'guard' && !barged)) {
-      const words = full.split(/\s+/).filter(Boolean).length
       if (mode === 'guard') {
         // An override word cuts through everything below it — "stop" has to
         // work on the first syllable or it is not a stop button.
@@ -775,8 +775,10 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
           // path can be instant because it triggers on loudness the canceller
           // has already had a pass at; here the evidence is a transcript of
           // audio that includes his own playback, and one word of that is not
-          // evidence of anything.
-          if (words < 2) return
+          // evidence of anything. And they must be final words: an interim
+          // guess the recogniser later withdraws cancelled the question in
+          // flight and left nothing to replace it — see bargeIn.ts.
+          if (!isBargeIn(settled, interim)) return
         }
       }
       started = true
