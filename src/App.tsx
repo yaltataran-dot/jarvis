@@ -133,6 +133,29 @@ export default function App() {
     idleTimer.current = setTimeout(goDormant, window)
   }
 
+  /**
+   * listen(), once he has finished speaking and the recogniser has been
+   * brought up clean — see rearm in voice.ts. The cue is the user's signal to
+   * start, so it must not sound while nothing is capturing. `still` is checked
+   * after the wait: something else may have taken the floor meanwhile.
+   */
+  const listenWhenReady = async (window: number, still: () => boolean) => {
+    const ok = (await voice.current?.rearm()) ?? false
+    if (!still()) return
+    // A failed turn's own message matters more than this one.
+    if (!ok && !store.getState().error) {
+      trace('app:not-ready')
+      store
+        .getState()
+        .setError(
+          LANG === 'ru'
+            ? 'Распознавание речи ещё не запустилось — начало фразы может не дойти.'
+            : 'Speech recognition has not started yet — the start of what you say may be lost.',
+        )
+    }
+    listen(window)
+  }
+
   // -- one turn -------------------------------------------------------------
 
   const respond = async (said: string): Promise<void> => {
@@ -238,7 +261,7 @@ export default function App() {
         music.working(false)
         // Stay open. Having to say his name again to add one more sentence is
         // the difference between a conversation and a vending machine.
-        listen(FOLLOW_UP_MS)
+        void listenWhenReady(FOLLOW_UP_MS, () => !stale())
       }
     }
   }
@@ -663,8 +686,9 @@ export default function App() {
     // playing — in command mode the microphone would take his own voice as the
     // question — and not if it was cut off, or if he has been woken some other
     // way in the meantime.
+    const stillDormant = () => store.getState().phase === 'dormant'
     void greeted.then((finished) => {
-      if (finished && store.getState().phase === 'dormant') listen(AWAIT_SPEECH_MS)
+      if (finished && stillDormant()) void listenWhenReady(AWAIT_SPEECH_MS, stillDormant)
     })
   }
 

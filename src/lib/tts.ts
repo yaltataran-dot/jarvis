@@ -127,6 +127,17 @@ export function speakingSince(): number {
  */
 const AUDIBLE_GUARD_MS = 700
 let audibleUntil = 0
+/** When his last sentence stopped sounding, or 0 if he has not spoken yet. */
+let quietSince = 0
+
+/**
+ * When his last sound ended. The voice loop compares it with the start of its
+ * recogniser session: a session that began after it cannot have heard him, so
+ * the guard above is not needed for it — see voice.ts.
+ */
+export function lastSoundEnded(): number {
+  return quietSince
+}
 
 function setSpeaking(text: string) {
   if (text) {
@@ -136,6 +147,7 @@ function setSpeaking(text: string) {
   }
   audibleUntil = Date.now() + AUDIBLE_GUARD_MS
   if (speaking) {
+    quietSince = Date.now()
     // The whole recent answer, not just its last sentence: the recogniser hands
     // the echo back as one phrase spanning several sentences, and matched
     // against the last one alone it scored as something new.

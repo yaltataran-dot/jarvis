@@ -1,12 +1,13 @@
 import { BRIDGE_HTTP_URL, LANG } from '../config'
 import { getMic } from './audio'
-import { speakingNow, speakingSince, speechActive } from './tts'
+import { lastSoundEnded, speakingNow, speakingSince, speechActive } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 import { trace } from './bridge'
 import { L, OVERRIDE, R, STOP_ONLY } from './stopWords'
 import { isEcho, norm } from './echo'
 import { isBargeIn } from './bargeIn'
+import { makeLedger, type Result } from './ledger'
 
 /**
  * The voice loop.
@@ -59,6 +60,12 @@ export type Voice = {
   stop: () => void
   /** True while a recogniser is actually running. */
   live: () => boolean
+  /**
+   * He has finished speaking and the user is about to be invited to talk.
+   * Resolves once a recogniser that has not heard him is capturing — true —
+   * or false if none came up in time. See startBrowserVoice.
+   */
+  rearm: () => Promise<boolean>
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +170,13 @@ const TRAILS = /[,;:–—-]$/
  * is also least likely: the user has not yet heard enough to want to stop him.
  */
 const SELF_GUARD_MS = 350
+
+/**
+ * How long rearm() waits for a fresh recogniser session to start capturing.
+ * Chrome usually takes a few hundred ms; past this the user is invited anyway
+ * and told the recogniser is not up.
+ */
+const READY_MS = 2000
 
 /** How long after sending a phrase its own late final result is recognised as such. */
 const LATE_FINAL_MS = 5000
@@ -360,7 +374,7 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
         ? 'Microphone access denied — voice input is unavailable.'
         : 'No microphone available.',
     )
-    return { stop: () => {}, live: () => false }
+    return { stop: () => {}, live: () => false, rearm: async () => false }
   }
   diag.engine = caps().stt ? 'elevenlabs' : 'browser'
   return caps().stt ? startElevenVoice(h) : startBrowserVoice(h)
@@ -546,6 +560,9 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       diag.running = false
     },
     live: () => vad?.live() ?? false,
+    // The detector never stops for his speech — echo cancellation and the
+    // guard threshold handle it — so there is nothing to bring up.
+    rearm: async () => vad?.live() ?? false,
   }
 }
 
@@ -568,7 +585,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
   if (!Ctor) {
     h.onError('This browser has no speech recognition — use Chrome or Edge, or add an ElevenLabs key.')
-    return { stop: () => {}, live: () => false }
+    return { stop: () => {}, live: () => false, rearm: async () => false }
   }
 
   let stopped = false
@@ -580,6 +597,20 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
    * running at once, every phrase handled twice.
    */
   let rec: any = null
+  /**
+   * When the live session was created. A session created after his last sound
+   * cannot hold any of it — see hearsHim.
+   */
+  let sessionAt = 0
+  /** Which of the live session's results have already been dealt with. */
+  const ledger = makeLedger()
+  /** rearm() calls waiting for a session to start capturing. */
+  let ready: ((ok: boolean) => void)[] = []
+  const settleReady = (ok: boolean) => {
+    const waiting = ready
+    ready = []
+    for (const r of waiting) r(ok)
+  }
   let settled = ''
   let interim = ''
   let started = false
@@ -612,12 +643,26 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     silenceTimer = null
   }
 
+  /**
+   * Is the live session hearing him?
+   *
+   * While he speaks, yes. In the AUDIBLE_GUARD_MS after, only if the session
+   * was already running while he spoke: its pending results can still hold his
+   * voice. A session started after he fell quiet — rearm() starts one the
+   * moment he finishes — holds nothing of his, so holding it to the guard only
+   * threw away the first words of the reply he had just invited.
+   */
+  const hearsHim = () =>
+    speakingSince() !== 0 || (speechActive() && sessionAt <= lastSoundEnded())
+
+  /** Everything heard so far is dealt with: sent, or deliberately dropped. */
   const reset = () => {
     clearSilence()
     settled = ''
     interim = ''
     started = false
     barged = false
+    ledger.commit()
   }
 
   const emit = () => {
@@ -627,7 +672,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     trace('voice:emit', { mode, len: text.length, text: text.slice(0, 40) })
     if (!text || mode === 'deaf') return
     // Never a command while he is audible — see onResult.
-    if (speechActive()) {
+    if (hearsHim()) {
       drop('heard while he was speaking')
       return
     }
@@ -669,16 +714,18 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     touch()
     const mode = h.mode()
     diag.mode = mode
+    // Only what has not been dealt with already — see ledger.ts. Read in every
+    // mode, so whatever is dropped below is known to have been seen.
+    const list: Result[] = []
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      list[i] = { transcript: e.results[i][0].transcript, isFinal: e.results[i].isFinal }
+    }
+    const read = ledger.read(list, e.resultIndex)
+    const fresh = read.fresh
+    interim = read.interim
     if (mode === 'deaf') {
       interim = ''
       return
-    }
-    let fresh = ''
-    interim = ''
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const chunk = e.results[i][0].transcript as string
-      if (e.results[i].isFinal) fresh += chunk
-      else interim += chunk
     }
     const heard = `${settled}${fresh} ${interim}`.replace(/\s+/g, ' ').trim()
     if (!heard) return
@@ -699,7 +746,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
      * had accumulated, and the session is restarted once he falls quiet (see
      * the resync below), so late results from his speech cannot surface either.
      */
-    if (speechActive()) {
+    if (hearsHim()) {
       const said = `${fresh} ${interim}`.replace(/\s+/g, ' ').trim()
       if (mode !== 'wake' && STOP_ONLY.test(said)) {
         const his = new Set(norm(speakingNow()).split(' '))
@@ -799,6 +846,9 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     if (stopped || rec) return
     const r = new Ctor()
     rec = r
+    sessionAt = Date.now()
+    // A new session numbers its results from 0 again.
+    ledger.clear()
     r.continuous = true
     r.interimResults = true
     r.lang = LANG === 'ru' ? 'ru-RU' : 'en-GB'
@@ -808,6 +858,9 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       diag.running = true
       diag.sessions++
       touch()
+      trace('voice:session', { afterHim: sessionAt > lastSoundEnded() })
+      // Capturing now: whoever was waiting to invite the user can.
+      if (!hearsHim()) settleReady(true)
     }
     r.onresult = (e: any) => {
       if (r === rec) onResult(e)
@@ -818,6 +871,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
         stopped = true
         diag.running = false
+        settleReady(false)
         h.onError('Microphone access was refused — voice input is unavailable.')
       }
     }
@@ -841,22 +895,28 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
 
   /**
    * Drop the live session — and every result it was still holding — and start
-   * a fresh one. Its own `end` is ignored (see `rec`), so this is the only
-   * thing that schedules the next start.
+   * a fresh one. Its own `end` handler is replaced (see `rec`), so this is the
+   * only thing that schedules the next start.
+   *
+   * The next session starts the moment the old one reports it has let go of
+   * the microphone, rather than after a fixed beat: every millisecond here is
+   * deafness at exactly the point he has just asked the user to speak. The
+   * timer is only the fallback for an `end` that never comes; spin() starts
+   * one session however many of them fire.
    */
   const restart = () => {
     const r = rec
     rec = null
     running = false
     diag.running = false
+    touch()
+    if (r) r.onend = () => spin()
     try {
       r?.abort()
     } catch {
       /* already gone */
     }
-    touch()
-    // A beat for the browser to release the old session's capture.
-    setTimeout(spin, 120)
+    setTimeout(spin, 150)
   }
 
   spin()
@@ -876,15 +936,17 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
    * Resync when he falls quiet. Chrome keeps finalising audio for a while after
    * hearing it, so a session that ran through his answer can still hand back a
    * piece of it after he stopped — which used to arrive as the next command.
-   * When speechActive() goes false (his last sound plus a guard), anything
-   * accumulated is thrown away and the session restarted from clean.
+   * When he stops being audible (his last sound plus a guard), anything
+   * accumulated is thrown away and the session restarted from clean — unless
+   * rearm() has already done that: a session started after his last sound has
+   * nothing of his to drop, and what it holds is the user.
    */
   let wasAudible = false
   const resync = setInterval(() => {
     if (stopped) return
-    const audible = speechActive()
+    const audible = hearsHim()
     if (audible && !wasAudible) reset()
-    if (!audible && wasAudible) {
+    if (!audible && wasAudible && sessionAt <= lastSoundEnded()) {
       reset()
       diag.resyncs++
       trace('voice:resync')
@@ -908,5 +970,44 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       }
     },
     live: () => running,
+    /**
+     * Have a session that has not heard him capturing before the user is
+     * invited to speak.
+     *
+     * The old order: he finished, the app played the listening cue at once,
+     * and the session that had heard him was held to the audible guard for
+     * 700 ms, then aborted and replaced, and the replacement took its own time
+     * to start — up to a second and a half of deafness straight after the cue,
+     * which is when people start talking. The first words were simply lost.
+     *
+     * Now the session is replaced the moment he finishes — dropping his tail
+     * just as the resync would have — and this resolves once the new one is
+     * capturing, so the cue is a promise the microphone can keep. It never
+     * starts a second recogniser: spin() refuses while one exists.
+     */
+    rearm: () =>
+      new Promise<boolean>((resolve) => {
+        if (stopped) return resolve(false)
+        // He is still talking; there is nothing to rearm until he stops.
+        if (speakingSince() !== 0) return resolve(running)
+        if (rec && running && !hearsHim()) return resolve(true)
+        const timer = setTimeout(() => {
+          ready = ready.filter((r) => r !== done)
+          trace('voice:rearm-timeout', { running })
+          resolve(running && !hearsHim())
+        }, READY_MS)
+        const done = (ok: boolean) => {
+          clearTimeout(timer)
+          resolve(ok)
+        }
+        ready.push(done)
+        // Otherwise a session is already on its way and will settle this.
+        if (rec && sessionAt <= lastSoundEnded()) {
+          reset()
+          diag.resyncs++
+          trace('voice:rearm')
+          restart()
+        }
+      }),
   }
 }
