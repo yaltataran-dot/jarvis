@@ -32,6 +32,8 @@ import { effortFor } from './effort.mjs'
 import { describeFailure, turnFailed } from './failures.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
+import { createYandexMusic, musicAction } from './yandexMusic.mjs'
+import { musicServer } from './music.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 
@@ -186,6 +188,16 @@ const DISALLOWED_BUILTINS = ALLOW_WRITES
  * The folders the jarvis_pc tools may see: the project, plus any listed in
  * JARVIS_PC_ROOTS (separated by ";"). Nothing outside them is listed, found or read.
  */
+/**
+ * Yandex Music (yandexMusic.mjs). One instance for the whole bridge: the page's
+ * direct commands (/music) and the model's tools share its queue, so a click
+ * from one cannot race a click from the other.
+ */
+const YM = createYandexMusic({ log: (line) => console.log(line) })
+// The Windows media helper takes two seconds to start; pay it now, not on the
+// first "что играет".
+if (process.platform === 'win32') YM.warm()
+
 const PC_ROOTS = [
   PROJECT_ROOT,
   ...(process.env.JARVIS_PC_ROOTS ?? '').split(';').map((s) => s.trim()).filter(Boolean),
@@ -334,6 +346,10 @@ function decideTool(name) {
     // changes anything. Its names would trip the verb rules — `pc_open_app`
     // reads as a launch — which is why it is named here.
     if (server === 'jarvis_pc') return true
+
+    // Yandex Music: fixed player actions on the user's own app, nothing on
+    // disk or the network. `music_control`'s "play" would trip the verb rules.
+    if (server === 'jarvis_music') return true
 
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
@@ -549,6 +565,19 @@ Their computer — the \`pc_*\` tools:
   one sentence that it is not permitted here; never look for a way around it.
 - A refusal about a secret file is final. Say the file is closed; never try to
   reach it another way.
+
+Music — the \`music_*\` tools drive their Yandex Music app:
+- Asked to play, pause, skip, change the volume or name the song, DO it with
+  these tools. "Включи <something>" is music only when it plainly is; "включи
+  камеру" is not.
+- Their own playlists — «Мне нравится» (liked tracks, "любимые", "избранное"),
+  or one they name — are \`music_playlist\`, never a search: search finds
+  public playlists, and playing a stranger's instead of theirs is wrong.
+- Not sure what to play — which song, which artist, which playlist? Ask in one
+  short question before playing anything.
+- Say only what the tool reports. If it says the player did not change, say
+  the music did not start; never claim it did.
+- Answer in one short sentence: the music is the point, not you.
 
 SPEED. The user is waiting in silence while you work; every tool call is
 seconds of it.
@@ -1015,6 +1044,31 @@ const handleRequest = async (req, res) => {
          }`,
       )
     }
+  }
+
+  // Yandex Music, for the commands the page recognises itself ("пауза",
+  // "следующий трек") — no model turn. Always answers 200 with a result
+  // object; what happened is in its `code` (see yandexMusic.mjs).
+  if (req.method === 'POST' && req.url === '/music') {
+    let body = ''
+    for await (const chunk of req) {
+      body += chunk
+      if (body.length > 4096) {
+        req.destroy()
+        res.writeHead(413, cors)
+        return res.end('body too large')
+      }
+    }
+    let cmd
+    try {
+      cmd = JSON.parse(body || '{}')
+    } catch {
+      res.writeHead(400, cors)
+      return res.end('bad json')
+    }
+    const result = await musicAction(YM, cmd)
+    res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+    return res.end(JSON.stringify(result))
   }
 
   if (req.method === 'POST' && req.url === '/tts') {
@@ -1568,6 +1622,8 @@ wss.on('connection', (socket) => {
         jarvis_eyes: visionServer(ask),
         // The computer: open an approved app, list, find, read, run a check.
         jarvis_pc: pcServer({ roots: PC_ROOTS, log: (line) => console.log(line) }),
+        // Yandex Music: play, pause, tracks, volume, search.
+        jarvis_music: musicServer(YM),
       },
       disallowedTools: DISALLOWED_BUILTINS,
       // A plain system prompt, not the claude_code preset. The preset is

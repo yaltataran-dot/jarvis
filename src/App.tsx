@@ -41,6 +41,8 @@ import { getMic, startAnalyser, micLevel } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
 import { trace } from './lib/bridge'
 import { env } from './config'
+import { musicReply, parseMusicCommand, parseYesNo, type MusicIntent, type MusicKind } from './lib/musicIntent'
+import { runMusic } from './lib/yandexMusic'
 
 /**
  * The conversation.
@@ -63,6 +65,21 @@ const AWAIT_SPEECH_MS = 14000
  *  drops back to standby. Long enough that you don't have to say the name
  *  again to continue a thought. */
 const FOLLOW_UP_MS = 11000
+
+/** How long a music question ("Какую песню включить?", "Включить?") waits for its answer. */
+const MUSIC_ANSWER_MS = 30000
+
+/** How long after a music command bare "продолжи", "дальше" still mean the music. */
+const MUSIC_CONTEXT_MS = 30 * 60_000
+
+/** A music question he has asked, and what its answer will mean. */
+type MusicQuestion =
+  /** "Какую песню / какой плейлист включить?" — the answer is the name. */
+  | { ask: 'what'; kind: MusicKind; play: boolean }
+  /** "Нашёл … . Включить?" — a yes runs `then`. */
+  | { ask: 'confirm'; then: MusicIntent }
+  /** "Нашёл несколько плейлистов: …" — the answer picks one. */
+  | { ask: 'which'; options: string[] }
 
 /** crypto.randomUUID needs a secure context, which a LAN address over plain
  *  http is not. Not worth failing a whole turn over an id. */
@@ -96,6 +113,14 @@ export default function App() {
   const booting = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const voicePoll = useRef<ReturnType<typeof setInterval> | null>(null)
+  /**
+   * A music question waiting for its answer: after "Какую песню включить?" the
+   * next phrase is the song; after "Нашёл …. Включить?" a yes plays it; after
+   * "Нашёл несколько плейлистов: …" the next phrase picks one.
+   */
+  const musicAsked = useRef<{ q: MusicQuestion; until: number } | null>(null)
+  /** When a music command last worked — while recent, "продолжи" means the music. */
+  const musicAt = useRef(0)
 
   // -- helpers --------------------------------------------------------------
 
@@ -172,6 +197,10 @@ export default function App() {
     s.setCaption('')
     s.pushTurn({ id: newId(), role: 'user', text: said })
     s.setPhase('thinking')
+
+    // A music command is an action with one meaning: done here, no model turn.
+    const command = musicCommand(said)
+    if (command) return musicTurn(command, stale)
 
     const spk = createSpeaker()
     speaker.current = spk
@@ -264,6 +293,74 @@ export default function App() {
         void listenWhenReady(FOLLOW_UP_MS, () => !stale())
       }
     }
+  }
+
+  // -- music ------------------------------------------------------------------
+
+  /**
+   * The music command in a phrase, if it is one — including the answer to a
+   * music question he has just asked. Anything else clears that question.
+   */
+  const musicCommand = (said: string): MusicIntent | null => {
+    const asked = musicAsked.current
+    musicAsked.current = null
+    const direct = parseMusicCommand(said, { inMusic: Date.now() - musicAt.current < MUSIC_CONTEXT_MS })
+    if (direct || !asked || Date.now() > asked.until) return direct
+    const q = asked.q
+    const yesNo = parseYesNo(said)
+    if (q.ask === 'confirm') return yesNo === 'yes' ? q.then : null
+    // A refusal is not a title.
+    if (yesNo === 'no') return null
+    const answer = said.trim().replace(/[.!?]+$/, '')
+    if (q.ask === 'which') {
+      // "Второй" picks by position; anything else is the name itself.
+      const nth = ['перв', 'втор', 'трет', 'четв', 'пят'].findIndex((p) => answer.toLowerCase().startsWith(p))
+      return { action: 'playlist', name: q.options[nth] ?? answer, play: true }
+    }
+    if (q.kind === 'playlist') return { action: 'playlist', name: answer, play: q.play }
+    // "Какую песню?" — "Группа крови".
+    return { action: 'search', query: answer, kind: q.kind, play: q.play }
+  }
+
+  /**
+   * Carry out a music command and say what actually happened. The reply comes
+   * from the player's state as the bridge read it back, so "включаю" is only
+   * said when the music did start.
+   */
+  const musicTurn = async (intent: MusicIntent, stale: () => boolean): Promise<void> => {
+    const r = intent.action === 'clarify' ? { code: 'ok' as const } : await runMusic(intent)
+    if (stale()) return
+    trace('app:music', { action: intent.action, code: r.code })
+    const text = musicReply(intent, r)
+    if (r.code === 'ok' || r.playing) musicAt.current = Date.now()
+    const question: MusicQuestion | null =
+      intent.action === 'clarify'
+        ? { ask: 'what', kind: intent.kind, play: intent.play }
+        : r.code === 'ambiguous' && r.options?.length
+          ? { ask: 'which', options: r.options }
+          : (intent.action === 'search' || intent.action === 'playlist') && !intent.play && r.code === 'ok' && r.found
+            ? { ask: 'confirm', then: { ...intent, play: true } }
+            : null
+    const asking = !!question
+    if (question) musicAsked.current = { q: question, until: Date.now() + MUSIC_ANSWER_MS }
+
+    const s = store.getState()
+    s.pushTurn({ id: newId(), role: 'jarvis', text })
+    s.setPhase('speaking')
+    const spk = createSpeaker()
+    speaker.current = spk
+    spk.say(text)
+    await spk.end()
+    if (stale()) return
+    speaker.current = null
+    // Music now coming out of the speakers would be heard as the next
+    // question, so he stands by for his name — unless he has just asked one.
+    // The recogniser is brought up clean at once either way (see rearm), so
+    // "Джарвис, пауза" right after he speaks is not lost to a restart.
+    if (r.playing && !asking) {
+      void voice.current?.rearm()
+      goDormant()
+    } else void listenWhenReady(FOLLOW_UP_MS, () => !stale())
   }
 
   // -- voice events ---------------------------------------------------------
