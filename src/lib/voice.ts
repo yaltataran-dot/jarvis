@@ -1,10 +1,10 @@
 import { BRIDGE_HTTP_URL, LANG } from '../config'
 import { getMic } from './audio'
-import { speakingNow, speakingSince } from './tts'
+import { speakingNow, speakingSince, speechActive } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 import { trace } from './bridge'
-import { L, OVERRIDE, R } from './stopWords'
+import { L, OVERRIDE, R, STOP_ONLY } from './stopWords'
 import { isEcho, norm } from './echo'
 
 /**
@@ -319,6 +319,8 @@ export const diag = {
   selfGuarded: 0,
   /** Transcription failures (network, or the bridge speech proxy). */
   restarts: 0,
+  /** Sessions restarted after he finished speaking, to drop late results. */
+  resyncs: 0,
   /** Milliseconds the last transcription round-trip took. */
   idleMs: 0,
 }
@@ -570,6 +572,12 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
 
   let stopped = false
   let running = false
+  /**
+   * The one live recogniser. Every handler checks it is still this one: an
+   * aborted session goes on to fire its own `end`, and that stale `end` used
+   * to null out its replacement and schedule another start — two recognisers
+   * running at once, every phrase handled twice.
+   */
   let rec: any = null
   let settled = ''
   let interim = ''
@@ -617,6 +625,11 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     reset()
     trace('voice:emit', { mode, len: text.length, text: text.slice(0, 40) })
     if (!text || mode === 'deaf') return
+    // Never a command while he is audible — see onResult.
+    if (speechActive()) {
+      drop('heard while he was speaking')
+      return
+    }
     if (isEcho(text, speakingNow())) {
       drop('echo of his own voice')
       return
@@ -668,6 +681,49 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     }
     const heard = `${settled}${fresh} ${interim}`.replace(/\s+/g, ' ').trim()
     if (!heard) return
+
+    /**
+     * He is audible, so the microphone is hearing the speakers.
+     *
+     * This engine has no echo cancellation against the page's own audio, and
+     * the text match in isEcho is not enough on its own: the recogniser
+     * garbles synthetic speech, his answer scored as new words, cut him off as
+     * a barge-in, and was sent back to him as a question — he answered himself
+     * in a loop. So while he speaks nothing he might be saying is a command.
+     *
+     * One thing gets through: a standalone stop ("стоп", "хватит, сэр"), the
+     * whole phrase and nothing else. An interim one is taken at once so stop is
+     * instant — unless he is saying that very word himself right now, when it
+     * waits for the final. Everything else is discarded, along with whatever
+     * had accumulated, and the session is restarted once he falls quiet (see
+     * the resync below), so late results from his speech cannot surface either.
+     */
+    if (speechActive()) {
+      const said = `${fresh} ${interim}`.replace(/\s+/g, ' ').trim()
+      if (mode !== 'wake' && STOP_ONLY.test(said)) {
+        const his = new Set(norm(speakingNow()).split(' '))
+        const echoed = norm(said)
+          .split(' ')
+          .some((w) => his.has(w))
+        if (!echoed || fresh.trim()) {
+          reset()
+          lastSent = norm(said)
+          lastSentAt = Date.now()
+          diag.heard = said
+          diag.heardAt = Date.now()
+          diag.accepted++
+          diag.dropped = ''
+          trace('voice:stop-while-speaking', { text: said.slice(0, 30) })
+          h.onSpeechStart()
+          h.onUtterance(said)
+          return
+        }
+      }
+      reset()
+      drop('heard while he was speaking')
+      return
+    }
+
     if (isEcho(`${fresh} ${interim}`, speakingNow())) {
       interim = ''
       return
@@ -736,19 +792,26 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
   }
 
   const spin = () => {
-    if (stopped || running) return
-    rec = new Ctor()
-    rec.continuous = true
-    rec.interimResults = true
-    rec.lang = LANG === 'ru' ? 'ru-RU' : 'en-GB'
-    rec.onstart = () => {
+    // One recogniser at a time: `rec` is set from creation, not from `start`,
+    // so a second call while the first is still starting does nothing.
+    if (stopped || rec) return
+    const r = new Ctor()
+    rec = r
+    r.continuous = true
+    r.interimResults = true
+    r.lang = LANG === 'ru' ? 'ru-RU' : 'en-GB'
+    r.onstart = () => {
+      if (r !== rec) return
       running = true
       diag.running = true
       diag.sessions++
       touch()
     }
-    rec.onresult = onResult
-    rec.onerror = (ev: any) => {
+    r.onresult = (e: any) => {
+      if (r === rec) onResult(e)
+    }
+    r.onerror = (ev: any) => {
+      if (r !== rec) return
       diag.lastError = String(ev.error ?? '')
       if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
         stopped = true
@@ -756,7 +819,9 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
         h.onError('Microphone access was refused — voice input is unavailable.')
       }
     }
-    rec.onend = () => {
+    r.onend = () => {
+      // A session we already replaced is not ours to restart.
+      if (r !== rec) return
       running = false
       diag.running = false
       touch()
@@ -764,11 +829,32 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       if (!stopped) setTimeout(spin, 80)
     }
     try {
-      rec.start()
+      r.start()
     } catch {
+      if (rec === r) rec = null
       running = false
       setTimeout(spin, 250)
     }
+  }
+
+  /**
+   * Drop the live session — and every result it was still holding — and start
+   * a fresh one. Its own `end` is ignored (see `rec`), so this is the only
+   * thing that schedules the next start.
+   */
+  const restart = () => {
+    const r = rec
+    rec = null
+    running = false
+    diag.running = false
+    try {
+      r?.abort()
+    } catch {
+      /* already gone */
+    }
+    touch()
+    // A beat for the browser to release the old session's capture.
+    setTimeout(spin, 120)
   }
 
   spin()
@@ -781,22 +867,35 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     diag.idleMs = idle
     if (idle < 15000) return
     diag.restarts++
-    try {
-      rec?.abort()
-    } catch {
-      /* already gone */
-    }
-    rec = null
-    running = false
-    diag.running = false
-    touch()
-    spin()
+    restart()
   }, 5000)
+
+  /**
+   * Resync when he falls quiet. Chrome keeps finalising audio for a while after
+   * hearing it, so a session that ran through his answer can still hand back a
+   * piece of it after he stopped — which used to arrive as the next command.
+   * When speechActive() goes false (his last sound plus a guard), anything
+   * accumulated is thrown away and the session restarted from clean.
+   */
+  let wasAudible = false
+  const resync = setInterval(() => {
+    if (stopped) return
+    const audible = speechActive()
+    if (audible && !wasAudible) reset()
+    if (!audible && wasAudible) {
+      reset()
+      diag.resyncs++
+      trace('voice:resync')
+      restart()
+    }
+    wasAudible = audible
+  }, 100)
 
   return {
     stop: () => {
       stopped = true
       clearInterval(health)
+      clearInterval(resync)
       clearSilence()
       assemble.cancel()
       diag.running = false

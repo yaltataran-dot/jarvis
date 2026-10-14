@@ -117,12 +117,24 @@ export function speakingSince(): number {
   return speaking ? speakingAt : 0
 }
 
+/**
+ * How long after his last sound the microphone still counts as hearing him.
+ *
+ * Covers the gap between two sentences of one answer (a few tens of ms to a
+ * quarter second), the room's own tail, and the recogniser's lag in reporting
+ * what it heard — long enough that nothing he said lands as a command, short
+ * enough that a reply right after him is not lost.
+ */
+const AUDIBLE_GUARD_MS = 700
+let audibleUntil = 0
+
 function setSpeaking(text: string) {
   if (text) {
     speaking = text
     speakingAt = Date.now()
     return
   }
+  audibleUntil = Date.now() + AUDIBLE_GUARD_MS
   if (speaking) {
     // The whole recent answer, not just its last sentence: the recogniser hands
     // the echo back as one phrase spanning several sentences, and matched
@@ -148,6 +160,21 @@ function setSpeaking(text: string) {
 export function speakingNow(): string {
   const tail = Date.now() < recentUntil ? recent : ''
   return `${speaking} ${tail}`.trim()
+}
+
+/**
+ * Is he audible right now — speaking, or within AUDIBLE_GUARD_MS of having
+ * stopped?
+ *
+ * The voice loop treats this as "the microphone is hearing the speakers": it
+ * takes no commands while it is true, only a standalone stop. The text match
+ * in isEcho could not be relied on for that — Chrome's recogniser hears the
+ * speakers with no echo cancellation and garbles synthetic speech enough that
+ * his own answer scored as new words, came back as a question, and he answered
+ * himself in a loop.
+ */
+export function speechActive(): boolean {
+  return speaking !== '' || Date.now() < audibleUntil
 }
 
 // Sentence boundaries live in sentences.ts.
