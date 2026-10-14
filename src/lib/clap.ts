@@ -41,6 +41,17 @@ const COOLDOWN_MS = 1200
 
 export type ClapListener = { stop: () => void }
 
+/**
+ * The room's loudness as the detector last measured it, 0 when not listening.
+ * Read-only, for the start screen's ring to glow with what the microphone
+ * hears — so a clap visibly lands before it powers anything up. Nothing in the
+ * detection reads it.
+ */
+let currentLevel = 0
+export function clapLevel(): number {
+  return currentLevel
+}
+
 export const diag = {
   listening: false,
   claps: 0,
@@ -102,6 +113,7 @@ export async function listenForClap(onClap: () => void): Promise<ClapListener> {
 
     const now = performance.now()
     const level = rms()
+    currentLevel = level
     history.push(level)
     if (history.length > HISTORY) history.shift()
 
@@ -152,6 +164,7 @@ export async function listenForClap(onClap: () => void): Promise<ClapListener> {
     stop: () => {
       stopped = true
       diag.listening = false
+      currentLevel = 0
       cancelAnimationFrame(raf)
       try {
         source.disconnect()

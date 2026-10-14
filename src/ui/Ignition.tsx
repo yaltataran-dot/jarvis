@@ -1,12 +1,18 @@
+import { useEffect, useRef } from 'react'
 import { useStore } from '../store'
+import { LANG } from '../config'
+import { clapLevel } from '../lib/clap'
 
 /**
- * The start gate.
+ * The start gate, in the ЮГ-ТРАНСФЕР livery.
  *
  * Browsers refuse to play audio or start speech synthesis until the user has
- * interacted with the page, so something has to be clicked before JARVIS can
- * make a sound. Rather than hide that behind a permissions banner, it's the
- * cold open: a dead interface waiting to be switched on.
+ * interacted with the page, so something has to be clicked before he can make
+ * a sound. Rather than hide that behind a permissions banner, it's the cold
+ * open: the system powered but idle, an energy ring charging round the logo,
+ * waiting to be switched on — by a click anywhere (the ring is the obvious
+ * place) or a clap, which App.tsx listens for while this is up. There is no
+ * spoken command here: nothing is listening for words until he has started.
  *
  * Deliberately NOT wrapped in AnimatePresence, and the reason is worth keeping.
  *
@@ -32,23 +38,84 @@ import { useStore } from '../store'
  * A plain conditional cannot strand anything. The fade-in survives because
  * mounting is not the dangerous direction; the fade-out is gone, and the boot
  * sequence takes the screen immediately anyway, so there is nothing to see.
+ * All motion is CSS for the same reason — see .ig-* in index.css.
  */
+
+const ru = LANG === 'ru'
+
+const TEXT = ru
+  ? {
+      tag: 'Голосовой ИИ-ассистент',
+      ready: 'Система готова к запуску',
+      hint: 'Нажмите на центральное кольцо или хлопните в ладоши',
+      label: 'Запустить систему',
+    }
+  : {
+      tag: 'Voice AI assistant',
+      ready: 'System ready to start',
+      hint: 'Click the ring, or clap, to power up',
+      label: 'Start the system',
+    }
+
 export function Ignition({ onStart }: { onStart: () => void }) {
   const phase = useStore((s) => s.phase)
+  const core = useRef<HTMLSpanElement>(null)
+
+  // The ring glows with what the microphone hears — the same meter the clap
+  // detector reads — so a clap visibly lands before the system answers it.
+  // Written straight to a CSS variable: a re-render sixty times a second for
+  // one number would be waste.
+  useEffect(() => {
+    if (phase !== 'offline') return
+    let raf = 0
+    let shown = 0
+    const tick = () => {
+      // Speech sits around 0.02–0.08 RMS, a clap peaks well above; stretch it
+      // and ease the fall so the glow reads as a response, not a flicker.
+      const target = Math.min(1, clapLevel() * 9)
+      shown = target > shown ? target : shown + (target - shown) * 0.08
+      core.current?.style.setProperty('--level', shown.toFixed(3))
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [phase])
+
   if (phase !== 'offline') return null
 
   return (
-    <button className="ignition" onClick={onStart}>
-      {/*
-        Spun by CSS rather than framer. As a motion element with
-        `repeat: Infinity` it was one of the things keeping the exit from ever
-        finishing — AnimatePresence waits for a leaving subtree's animations,
-        and an infinite one never ends.
-      */}
-      <span className="ignition-ring" />
-      <span className="ignition-label">
-        <span className="ignition-word">INITIALISE</span>
-        <span className="ignition-sub">click, or clap, to power up</span>
+    <button className="ignition" onClick={onStart} aria-label={TEXT.label}>
+      <span className="ig-floor" aria-hidden />
+
+      <span className="ig-head">
+        <span className="ig-brand">
+          <span className="ig-ug">ЮГ</span>
+          <span className="ig-tr">-ТРАНСФЕР</span>
+        </span>
+        <span className="ig-tag">{TEXT.tag}</span>
+      </span>
+
+      <span className="ig-core" ref={core} aria-hidden>
+        <span className="ig-bloom" />
+        <svg className="ig-rings" viewBox="-200 -200 400 400">
+          <circle r="186" className="ig-dots" />
+          <circle r="170" className="ig-track" />
+          {/* Energy gathering round the ring, then released as a pulse. */}
+          <circle r="170" className="ig-charge" />
+          <circle r="150" className="ig-segments" />
+          <circle r="136" className="ig-thin" />
+          <circle r="136" className="ig-comet" />
+          <circle r="124" className="ig-thin ig-thin-dashed" />
+          <circle r="124" className="ig-comet ig-comet-rev" />
+          <circle r="114" className="ig-disc" />
+          <circle r="114" className="ig-pulse" />
+        </svg>
+        <img className="ig-logo" src="/ug-transfer-logo.png" alt="" draggable={false} />
+      </span>
+
+      <span className="ig-text">
+        <span className="ig-ready">{TEXT.ready}</span>
+        <span className="ig-hint">{TEXT.hint}</span>
       </span>
     </button>
   )
