@@ -1358,8 +1358,10 @@ kbd {
  */
 
 .ignition {
-  --ig-core: min(50vmin, 470px);
-  --ig-cy: 53%;
+  /* The ring is the whole screen's subject now that it carries no words: in
+     the middle, and large enough to fill the room the name and captions left. */
+  --ig-core: min(66vmin, 640px);
+  --ig-cy: 50%;
   --level: 0;
   position: fixed;
   inset: 0;
@@ -1410,48 +1412,6 @@ kbd {
   background-size: 28px 28px;
   opacity: 0.55;
   animation: utFloor 4s linear infinite;
-}
-
-/* -- name ---------------------------------------------------------------- */
-
-.ig-head {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 8vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px;
-  animation: igRise 0.9s ease 0.1s both;
-}
-.ig-brand {
-  font-size: clamp(30px, 5.4vw, 78px);
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: 0.07em;
-}
-.ig-brand span {
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-.ig-ug {
-  background-image: linear-gradient(180deg, #ffc46e 0%, #ff8a14 48%, #e35a00 100%);
-  filter: drop-shadow(0 0 16px rgba(255, 122, 0, 0.55));
-}
-.ig-tr {
-  background-image: linear-gradient(180deg, #ffffff 0%, #ececec 46%, #9a9a9a 100%);
-  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.2));
-}
-.ig-tag {
-  font-size: clamp(11px, 1.1vw, 15px);
-  letter-spacing: 0.42em;
-  text-indent: 0.42em;
-  text-transform: uppercase;
-  color: var(--silver);
-  opacity: 0.7;
 }
 
 /* -- the energy ring ------------------------------------------------------ */
@@ -1601,49 +1561,14 @@ kbd {
 .ignition:hover .ig-charge,
 .ignition:hover .ig-pulse { animation-duration: 1.8s; }
 
-/* -- words ---------------------------------------------------------------- */
-
-.ig-text {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(var(--ig-cy) + var(--ig-core) * 0.56);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 0 16px;
-  animation: igRise 0.9s ease 0.6s both;
-}
-.ig-ready {
-  font-size: clamp(16px, 1.7vw, 24px);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #fff;
-  text-shadow: 0 0 18px rgba(255, 122, 0, 0.55);
-  transition: text-shadow 300ms ease;
-}
-.ignition:hover .ig-ready { text-shadow: 0 0 26px rgba(255, 140, 30, 0.95); }
-.ig-hint {
-  font-size: clamp(12px, 1.05vw, 15px);
-  letter-spacing: 0.05em;
-  color: var(--silver);
-  opacity: 0.72;
-}
-
 @keyframes igSpin { to { transform: rotate(360deg); } }
 @keyframes igBreath {
   0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }
 }
-@keyframes igRise {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: none; }
-}
 
 @media (max-width: 900px), (max-aspect-ratio: 1 / 1) {
-  .ignition { --ig-core: min(72vmin, 400px); --ig-cy: 46%; }
-  .ig-head { top: 6vh; }
+  .ignition { --ig-core: min(80vmin, 480px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

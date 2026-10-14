@@ -41,21 +41,11 @@ import { clapLevel } from '../lib/clap'
  * All motion is CSS for the same reason — see .ig-* in index.css.
  */
 
-const ru = LANG === 'ru'
-
-const TEXT = ru
-  ? {
-      tag: 'Голосовой ИИ-ассистент',
-      ready: 'Система готова к запуску',
-      hint: 'Нажмите на центральное кольцо или хлопните в ладоши',
-      label: 'Запустить систему',
-    }
-  : {
-      tag: 'Voice AI assistant',
-      ready: 'System ready to start',
-      hint: 'Click the ring, or clap, to power up',
-      label: 'Start the system',
-    }
+/**
+ * No words on screen — the ring and the logo are the whole gate. The label is
+ * still there for a screen reader, which cannot see that the ring is a button.
+ */
+const LABEL = LANG === 'ru' ? 'Запустить систему' : 'Start the system'
 
 export function Ignition({ onStart }: { onStart: () => void }) {
   const phase = useStore((s) => s.phase)
@@ -84,16 +74,8 @@ export function Ignition({ onStart }: { onStart: () => void }) {
   if (phase !== 'offline') return null
 
   return (
-    <button className="ignition" onClick={onStart} aria-label={TEXT.label}>
+    <button className="ignition" onClick={onStart} aria-label={LABEL}>
       <span className="ig-floor" aria-hidden />
-
-      <span className="ig-head">
-        <span className="ig-brand">
-          <span className="ig-ug">ЮГ</span>
-          <span className="ig-tr">-ТРАНСФЕР</span>
-        </span>
-        <span className="ig-tag">{TEXT.tag}</span>
-      </span>
 
       <span className="ig-core" ref={core} aria-hidden>
         <span className="ig-bloom" />
@@ -111,11 +93,6 @@ export function Ignition({ onStart }: { onStart: () => void }) {
           <circle r="114" className="ig-pulse" />
         </svg>
         <img className="ig-logo" src="/ug-transfer-logo.png" alt="" draggable={false} />
-      </span>
-
-      <span className="ig-text">
-        <span className="ig-ready">{TEXT.ready}</span>
-        <span className="ig-hint">{TEXT.hint}</span>
       </span>
     </button>
   )
