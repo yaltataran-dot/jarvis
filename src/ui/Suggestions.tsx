@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useStore } from '../store'
+import { LANG } from '../config'
 
 /**
  * Rotating example commands, shown only while idle.
@@ -11,7 +12,21 @@ import { useStore } from '../store'
  *
  * Each line is phrased the way you'd actually say it, not as a feature name.
  */
-const EXAMPLES = [
+/** Russian mode: only things the assistant can actually do through its tools
+ *  — searching the web is always there; mail and calendar only if connected,
+ *  so they are left out. */
+const EXAMPLES_RU = [
+  'какая завтра погода в Краснодаре',
+  'сколько ехать от Сочи до аэропорта Адлер',
+  'что нового в мире ИИ на этой неделе',
+  'найди ближайшую заправку',
+  'какие главные новости сегодня',
+  'какой курс доллара сегодня',
+  'какое расстояние от Краснодара до Геленджика',
+  'найди телефон автовокзала Краснодара',
+]
+
+const EXAMPLES_EN = [
   'what happened in AI this week',
   'generate an image of the Mark Seven suit',
   'take a screenshot of my phone',
@@ -23,6 +38,9 @@ const EXAMPLES = [
   'find me a loading animation',
   "what's the weather looking like",
 ]
+
+const ru = LANG === 'ru'
+const EXAMPLES = ru ? EXAMPLES_RU : EXAMPLES_EN
 
 const ROTATE_MS = 4200
 
@@ -42,7 +60,7 @@ export function Suggestions() {
 
   return (
     <div className="suggest">
-      <span className="suggest-lead">try</span>
+      <span className="suggest-lead">{ru ? 'попробуйте' : 'try'}</span>
       <AnimatePresence mode="wait">
         <motion.span
           key={i}
@@ -52,7 +70,7 @@ export function Suggestions() {
           exit={{ opacity: 0, y: -6 }}
           transition={{ duration: 0.35 }}
         >
-          “hey jarvis, {EXAMPLES[i]}”
+          {ru ? `«Джарвис, ${EXAMPLES[i]}»` : `“hey jarvis, ${EXAMPLES[i]}”`}
         </motion.span>
       </AnimatePresence>
     </div>

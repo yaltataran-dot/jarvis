@@ -1,11 +1,20 @@
 @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;600&family=JetBrains+Mono:wght@300;400&display=swap');
 
 :root {
-  /* The interface cyan. `--accent` is re-declared per phase and per panel;
-     this one stays put and is what anything neutral pins itself to. */
-  --interface: #00e5ff;
+  /* The interface colour — ЮГ-ТРАНСФЕР neon orange. `--accent` is re-declared
+     per phase and per panel; this one stays put and is what anything neutral
+     pins itself to. */
+  --interface: #ff7a00;
   --accent: var(--interface);
-  --bg: #01060c;
+  /* Near-black with a little graphite in it, rather than the old blue-black. */
+  --bg: #050506;
+  /* Metal: the panels are dark brushed graphite with a cool top edge, not
+     tinted glass. One recipe, used by every panel on the main screen. */
+  --metal-hi: rgba(44, 45, 50, 0.8);
+  --metal-lo: rgba(13, 13, 15, 0.86);
+  --metal-edge: rgba(255, 255, 255, 0.09);
+  --silver: #eceef1;
+  --danger: #ff4d3d;
   font-family: 'Chakra Petch', system-ui, sans-serif;
   color-scheme: dark;
 }
@@ -34,8 +43,8 @@ body::after {
     radial-gradient(ellipse at center, transparent 30%, rgba(0, 0, 0, 0.55) 100%),
     repeating-linear-gradient(
       0deg,
-      rgba(0, 229, 255, 0.028) 0px,
-      rgba(0, 229, 255, 0.028) 1px,
+      rgba(255, 140, 40, 0.018) 0px,
+      rgba(255, 140, 40, 0.018) 1px,
       transparent 1px,
       transparent 3px
     );
@@ -57,8 +66,12 @@ body::after {
   color: var(--accent);
   transition: color 600ms ease;
   text-transform: uppercase;
-  letter-spacing: 0.16em;
-  font-size: 11px;
+  letter-spacing: 0.12em;
+  font-size: 13px;
+  /* Chakra Petch has no Cyrillic, so every Russian word on this screen was in
+     whatever the browser fell back to. Bahnschrift ships with Windows 10/11,
+     has Cyrillic, and is the same squared technical cut as the start screen. */
+  font-family: 'Bahnschrift', 'Segoe UI', 'Chakra Petch', system-ui, sans-serif;
 }
 
 .corner {
@@ -84,27 +97,47 @@ body::after {
   padding: 0 92px;
 }
 
-.brand-mark {
+.brand {
+  --logo-w: clamp(140px, 12vw, 200px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* The company logo, unaltered. Its file carries a transparent band over the
+   top third (the mark spans y 310–895 of 921), which would push it below the
+   status line opposite; the negative margin takes that band back out of the
+   layout without cropping the image. */
+.brand-logo {
   display: block;
-  font-size: 19px;
-  font-weight: 600;
-  letter-spacing: 0.42em;
-  text-shadow: 0 0 22px color-mix(in srgb, var(--accent) 70%, transparent);
+  width: var(--logo-w);
+  height: auto;
+  margin-top: calc(var(--logo-w) * -0.196);
+  filter: drop-shadow(0 0 14px rgba(255, 122, 0, 0.28));
+  user-select: none;
 }
 
 .brand-sub {
   display: block;
-  margin-top: 5px;
-  font-size: 9px;
-  letter-spacing: 0.22em;
-  opacity: 0.42;
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 0.34em;
+  color: var(--silver);
+  opacity: 0.55;
 }
 
 .status {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 10px;
+  font-size: 12px;
+  padding: 7px 14px;
+  border: 1px solid var(--metal-edge);
+  border-right: 2px solid var(--accent);
+  border-radius: 3px;
+  background: linear-gradient(160deg, var(--metal-hi), var(--metal-lo));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: border-color 600ms ease;
   /* The header is space-between, so with the wordmark hidden the status line
      would slide to the left edge on its own. Claiming the free space keeps it
      pinned right whether or not the brand is there — and with both present it
@@ -128,22 +161,40 @@ body::after {
 
 /* Side rails */
 
+/* Side rails — metal plates with a lit edge on the side facing the centre. */
 .rail {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  font-size: 10px;
+  gap: 10px;
+  font-size: 12px;
+  min-width: 140px;
+  padding: 14px 18px;
+  border: 1px solid var(--metal-edge);
+  border-radius: 3px;
+  background: linear-gradient(160deg, var(--metal-hi), var(--metal-lo));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 12px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
 }
-.rail-left { left: 92px; }
-.rail-right { right: 92px; align-items: flex-end; }
+.rail-right {
+  right: 72px;
+  align-items: flex-end;
+  border-right: 2px solid var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 12px 32px rgba(0, 0, 0, 0.45),
+    6px 0 18px -10px var(--accent);
+}
 
 .rail-title {
-  font-size: 8px;
-  opacity: 0.4;
-  letter-spacing: 0.34em;
+  font-size: 10px;
+  color: var(--silver);
+  opacity: 0.55;
+  letter-spacing: 0.3em;
   margin-bottom: 4px;
 }
 
@@ -151,7 +202,8 @@ body::after {
   display: flex;
   align-items: center;
   gap: 8px;
-  opacity: 0.82;
+  color: var(--silver);
+  opacity: 0.9;
 }
 .rail-item.dim { opacity: 0.3; }
 .rail-item.mono { font-family: 'JetBrains Mono', monospace; letter-spacing: 0.1em; }
@@ -200,8 +252,8 @@ body::after {
   white-space: nowrap;
   padding: 7px 16px 7px 14px;
   border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--accent) 9%, rgba(2, 10, 12, 0.55));
+  border-radius: 3px;
+  background: linear-gradient(160deg, var(--metal-hi), var(--metal-lo));
   backdrop-filter: blur(5px);
   box-shadow: 0 0 30px color-mix(in srgb, var(--accent) 22%, transparent);
   /* Above the panels and the log so a long tool name reads cleanly, but it is a
@@ -213,10 +265,10 @@ body::after {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 8px;
-  letter-spacing: 0.36em;
-  text-indent: 0.36em;
-  opacity: 0.6;
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+  opacity: 0.7;
   padding-right: 12px;
   border-right: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
 }
@@ -230,7 +282,7 @@ body::after {
   max-width: min(52vw, 620px);
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #f2fbff;
+  color: var(--silver);
   text-shadow: 0 0 24px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
@@ -252,42 +304,186 @@ body::after {
   to { transform: rotate(360deg); }
 }
 
-/* Conversation log */
-
-.log {
+/* --------------------------------------------------------------- dialogue */
+/*
+ * The conversation (DialogDock in Hud.tsx): a compact window in the
+ * bottom-right corner, scrolling inside itself, folding to a chip. It used to
+ * be a wide band across the bottom of the reactor.
+ *
+ * Its height is worked out from the middle of the screen, so that it can never
+ * reach the signal rail (right, vertically centred, ~185px tall): the window's
+ * top stays below 50vh − 92px whatever the window height.
+ */
+.dialog {
+  --dialog-w: min(370px, calc(100vw - 56px));
   position: absolute;
-  left: 50%;
-  bottom: 132px;
-  transform: translateX(-50%);
-  width: min(760px, 68vw);
+  right: 28px;
+  bottom: 28px;
+  z-index: 3;
+  width: var(--dialog-w);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  align-items: flex-end;
+  gap: 8px;
   text-transform: none;
-  letter-spacing: 0.01em;
+}
+/* The window takes this corner; its bracket would only show through the chip. */
+.hud:has(.dialog) .corner-br { display: none; }
+
+.dialog-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  max-height: clamp(150px, calc(50vh - 176px), 420px);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 4px;
+  background: rgba(8, 8, 10, 0.78);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 0 24px -8px var(--accent),
+    0 14px 36px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  /* Folded (or nothing said yet). */
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  transform-origin: bottom right;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease,
+    visibility 0s linear 220ms;
+}
+.dialog[data-open='1'] .dialog-panel {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease,
+    visibility 0s;
 }
 
+.dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--accent) 45%, transparent) transparent;
+}
+
+/* One line of the conversation: who, then what — stacked, so a narrow window
+   still gives the words its whole width. */
 .log-line {
   display: flex;
-  gap: 14px;
-  align-items: baseline;
+  flex-direction: column;
+  gap: 2px;
   font-size: 14px;
-  line-height: 1.55;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  /* Long words and URLs wrap instead of widening the window. */
+  overflow-wrap: anywhere;
 }
 
 .log-who {
-  flex: 0 0 54px;
-  font-size: 8px;
-  letter-spacing: 0.26em;
+  font-size: 9px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  opacity: 0.45;
-  padding-top: 3px;
+  opacity: 0.85;
+}
+.log-user .log-who { color: var(--silver); opacity: 0.5; }
+
+.log-user .log-text { color: var(--silver); opacity: 0.7; }
+.log-jarvis .log-text {
+  color: #f7f3ee;
+  text-shadow: 0 0 16px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
-.log-user .log-text { opacity: 0.52; }
-.log-jarvis .log-text {
-  color: #eaf9ff;
-  text-shadow: 0 0 26px color-mix(in srgb, var(--accent) 45%, transparent);
+.dialog-chip {
+  pointer-events: auto;
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 3px;
+  background: linear-gradient(160deg, var(--metal-hi), var(--metal-lo));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 14px -6px var(--accent);
+  backdrop-filter: blur(6px);
+  color: var(--silver);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+.dialog-chip:hover,
+.dialog[data-open='1'] .dialog-chip {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 20px -4px var(--accent);
+}
+.dialog-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.dialog-icon {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+/* Lines that arrived while it was folded. */
+.dialog-unread {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #120800;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-align: center;
+  box-shadow: 0 0 10px var(--accent);
+}
+.dialog-caret {
+  font-size: 9px;
+  opacity: 0.6;
+  transition: transform 250ms ease;
+}
+.dialog[data-open='1'] .dialog-caret { transform: rotate(180deg); }
+
+/* The centred live caption and error keep to the free middle at every width,
+   clear of the window on the right — a long caption at 66vw reached under it. */
+.caption,
+.error {
+  max-width: min(66vw, max(280px, calc(100vw - 2 * 430px)));
+}
+
+/* Middling widths: the hint and the suggestions do the same. Scoped under
+   .hud so these win over the base rules, which come later in the file. */
+@media (max-width: 1400px) {
+  .hud .hud-bottom { left: 260px; right: 426px; }
+  .hud .suggest {
+    max-width: max(280px, calc(100vw - 2 * 430px));
+    white-space: normal;
+    flex-wrap: wrap;
+    justify-content: center;
+    text-align: center;
+  }
+}
+@media (max-width: 1200px) {
+  .dialog { --dialog-w: min(330px, 34vw); }
 }
 
 /* Live partial transcript while listening */
@@ -297,26 +493,39 @@ body::after {
   left: 50%;
   bottom: 88px;
   transform: translateX(-50%);
-  font-size: 16px;
+  font-size: 18px;
   text-transform: none;
   letter-spacing: 0.02em;
-  color: #fff;
-  opacity: 0.85;
-  max-width: 66vw;
+  color: var(--silver);
+  /* max-width: see the dialogue section — it keeps clear of that window. */
   text-align: center;
+  padding: 6px 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 999px;
+  background: rgba(10, 10, 12, 0.66);
+  backdrop-filter: blur(6px);
 }
 
+/* A failure is a plate of its own, in the one colour nothing else uses. */
 .error {
   position: absolute;
   left: 50%;
-  bottom: 52px;
+  /* Clear of the hint line at 44px; the live caption it shares the band with
+     is empty whenever a failure is showing. */
+  bottom: 80px;
   transform: translateX(-50%);
-  color: #ff6b6b;
-  font-size: 10px;
+  color: #ffc2b8;
+  font-size: 13px;
   text-transform: none;
-  letter-spacing: 0.04em;
-  max-width: 70vw;
+  letter-spacing: 0.03em;
+  /* max-width: see the dialogue section — it keeps clear of that window. */
   text-align: center;
+  padding: 7px 16px;
+  border: 1px solid color-mix(in srgb, var(--danger) 70%, transparent);
+  border-left: 3px solid var(--danger);
+  border-radius: 3px;
+  background: rgba(46, 8, 4, 0.78);
+  box-shadow: 0 0 22px -8px var(--danger);
 }
 
 .hud-bottom {
@@ -325,16 +534,356 @@ body::after {
   left: 0;
   right: 0;
   text-align: center;
-  font-size: 9px;
-  opacity: 0.38;
-  letter-spacing: 0.2em;
+  font-size: 11px;
+  color: var(--silver);
+  opacity: 0.6;
+  letter-spacing: 0.16em;
 }
+.hud-bottom b { color: var(--accent); font-weight: 600; }
 
 kbd {
   font-family: 'JetBrains Mono', monospace;
-  border: 1px solid currentColor;
-  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, currentColor 55%, transparent);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+/* ----------------------------------------------------------- centre state */
+/*
+ * The company logo at the heart of the reactor, with a ring that says what is
+ * happening. The phase colours are all one orange, so each state has its own
+ * motion and label too:
+ *   idle        slow breathing, a single arc drifting round
+ *   waking      a fast spin-up
+ *   listening   the arc turning, the glow swelling with the user's voice
+ *   processing  a segmented spinner
+ *   speaking    waves leaving the ring, the glow following his voice
+ *   error       red, still, the label pulsing
+ * Only --level changes per frame; everything else is CSS on transform/opacity.
+ */
+.core-state {
+  --cs: clamp(150px, 21vmin, 250px);
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--cs);
+  height: var(--cs);
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.core-state[data-mode='error'] { --accent: var(--danger); }
+
+.cs-glow {
+  position: absolute;
+  inset: 6%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 42%, transparent), transparent 74%);
+  opacity: calc(0.35 + var(--level, 0) * 0.65);
+  transform: scale(calc(0.92 + var(--level, 0) * 0.32));
+  transition: opacity 120ms linear, transform 120ms linear;
+}
+
+.cs-rings {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+/* Rotate about the view box origin, which is the ring centre — not 50% 50%,
+   which against the view box is a corner. */
+.cs-rings * { transform-box: view-box; transform-origin: 0 0; fill: none; }
+.cs-ring { stroke: color-mix(in srgb, var(--accent) 34%, transparent); stroke-width: 1.2; }
+/* Circumference 2π·96 ≈ 603. */
+.cs-arc {
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 110 493;
+  animation: csSpin 9s linear infinite;
+}
+.cs-dash {
+  stroke: color-mix(in srgb, var(--silver) 38%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 2 6;
+  animation: csSpin 40s linear infinite reverse;
+}
+
+/* The logo, unaltered; the shift centres the visible mark (see .ut-logo). */
+.cs-logo {
+  position: relative;
+  width: 78%;
+  height: auto;
+  transform: translateY(-15.4%);
+  filter: drop-shadow(0 0 10px rgba(0, 0, 0, 0.7));
+  user-select: none;
+  transition: opacity 400ms ease;
+}
+
+.cs-label {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 2px;
+  background: rgba(10, 10, 12, 0.7);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  white-space: nowrap;
+  color: var(--accent);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent);
+  transition: color 300ms ease, border-color 300ms ease;
+}
+
+/* Waves leaving the ring while he speaks. */
+.core-state::before,
+.core-state::after {
+  content: '';
+  position: absolute;
+  inset: 4%;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  opacity: 0;
+}
+
+/* -- per state -- */
+.core-state[data-mode='idle'] .cs-glow { animation: csBreath 4.5s ease-in-out infinite; }
+.core-state[data-mode='idle'] .cs-logo { opacity: 0.82; }
+
+.core-state[data-mode='waking'] .cs-arc { animation-duration: 1.1s; stroke-dasharray: 220 383; }
+
+.core-state[data-mode='listening'] .cs-arc { animation-duration: 3s; stroke-dasharray: 160 443; }
+
+.core-state[data-mode='processing'] .cs-arc {
+  stroke-dasharray: 34 16;
+  animation-duration: 1.4s;
+}
+.core-state[data-mode='processing'] .cs-glow { animation: csBreath 1.4s ease-in-out infinite; }
+
+.core-state[data-mode='speaking'] .cs-arc { animation-duration: 5s; stroke-dasharray: 300 303; }
+.core-state[data-mode='speaking']::before { animation: csWave 1.8s ease-out infinite; }
+.core-state[data-mode='speaking']::after { animation: csWave 1.8s ease-out 0.9s infinite; }
+
+.core-state[data-mode='error'] .cs-arc { animation: none; stroke-dasharray: 603 0; opacity: 0.8; }
+.core-state[data-mode='error'] .cs-label { animation: csBlink 1.2s ease-in-out infinite; }
+.core-state[data-mode='error'] .cs-logo { opacity: 0.55; }
+
+@keyframes csSpin { to { transform: rotate(360deg); } }
+@keyframes csBreath {
+  0%, 100% { opacity: 0.3; transform: scale(0.94); }
+  50% { opacity: 0.7; transform: scale(1.04); }
+}
+@keyframes csWave {
+  0% { opacity: 0.7; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.55); }
+}
+@keyframes csBlink { 50% { opacity: 0.45; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .core-state *,
+  .core-state::before,
+  .core-state::after { animation: none !important; }
+}
+
+/* ---------------------------------------------------------------- systems */
+/*
+ * The integrations chip (SystemsDock in Hud.tsx): folded by default at the
+ * bottom left, opening upward into the full list. The list is always in the
+ * DOM; closed, it is invisible and takes no pointer events.
+ */
+.sysdock {
+  position: absolute;
+  left: 84px;
+  bottom: 34px;
+  z-index: 3;
+  text-transform: uppercase;
+}
+
+.sysdock-chip {
+  pointer-events: auto;
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 3px;
+  background: linear-gradient(160deg, var(--metal-hi), var(--metal-lo));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 14px -6px var(--accent);
+  backdrop-filter: blur(6px);
+  color: var(--silver);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  /* Buttons reset text-transform in the browser's own stylesheet. */
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+.sysdock-chip:hover,
+.sysdock[data-open='1'] .sysdock-chip {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 20px -4px var(--accent);
+}
+.sysdock-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+
+.sysdock-icon {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.4;
+}
+.sysdock-count {
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0;
+  color: var(--accent);
+}
+/* Lit when the bridge has reported its servers; grey when it has not. */
+.sysdock-light {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5a5a5e;
+}
+.sysdock-light[data-live='1'] {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.sysdock-caret {
   font-size: 9px;
+  opacity: 0.6;
+  transition: transform 250ms ease;
+}
+.sysdock[data-open='1'] .sysdock-caret { transform: rotate(180deg); }
+
+.sysdock-panel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  width: min(300px, calc(100vw - 32px));
+  max-height: min(52vh, 420px);
+  overflow: auto;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--metal-edge);
+  border-left: 2px solid var(--accent);
+  border-radius: 3px;
+  background: linear-gradient(160deg, var(--metal-hi), var(--metal-lo));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 14px 36px rgba(0, 0, 0, 0.55),
+    -6px 0 18px -10px var(--accent);
+  backdrop-filter: blur(8px);
+  /* Closed. */
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  transform-origin: bottom left;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease,
+    visibility 0s linear 220ms;
+}
+.sysdock[data-open='1'] .sysdock-panel {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease,
+    visibility 0s;
+}
+
+.sysdock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--silver);
+  opacity: 0.75;
+}
+.sysdock-close {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--silver);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  width: 24px;
+  height: 22px;
+  cursor: pointer;
+}
+.sysdock-close:hover { border-color: var(--accent); color: var(--accent); }
+
+.sysdock-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--silver);
+}
+.sysdock-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  overflow-wrap: anywhere;
+}
+.sysdock-note {
+  margin-top: 10px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  color: var(--silver);
+  opacity: 0.5;
+}
+
+/* Narrow windows: the rails would sit on the reactor, so they tuck to the
+   edges and shrink; the log spans the width; the systems chip moves to the
+   corner and the hint line steps up out of its way. */
+@media (max-width: 900px) {
+  .rail { min-width: 0; padding: 10px 12px; font-size: 11px; }
+  .rail-right { right: 14px; }
+  .sysdock { left: 14px; bottom: 14px; }
+  .hud-bottom { bottom: 60px; padding: 0 12px; font-size: 10px; letter-spacing: 0.08em; }
+  /* The hint wraps to two lines here; the error and the log stand above it. */
+  .error { bottom: 112px; max-width: 92vw; }
+  /* The dialogue spans the width above both chips; while it is open the hint
+     steps aside and the caption and error stand above it. */
+  .dialog { --dialog-w: auto; left: 14px; right: 14px; bottom: 14px; width: auto; }
+  .dialog-panel { max-height: 34vh; }
+  .hud .hud-bottom { left: 0; right: 0; }
+  .hud:has(.dialog[data-open='1']) .hud-bottom { display: none; }
+  /* Above the open window there is only the reactor, so they go to the top,
+     under the header, rather than onto the ring. */
+  .hud:has(.dialog[data-open='1']) .error,
+  .hud:has(.dialog[data-open='1']) .caption { bottom: auto; top: 136px; }
+  .hud-top { padding: 0 24px; }
+  .core-state { --cs: clamp(120px, 34vmin, 200px); }
+}
+
+/* Phone width: the signal meter is decoration, and here it sits on the reactor. */
+@media (max-width: 600px) {
+  .rail-right { display: none; }
 }
 
 /* ----------------------------------------------------------------- panels */
@@ -783,65 +1332,329 @@ kbd {
 }
 
 .suggest-lead {
-  font-size: 8px;
-  letter-spacing: 0.34em;
-  opacity: 0.3;
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  opacity: 0.55;
 }
 
 .suggest-text {
-  font-size: 13px;
-  letter-spacing: 0.03em;
+  font-size: 15px;
+  letter-spacing: 0.02em;
   text-transform: none;
-  opacity: 0.45;
+  color: var(--silver);
+  opacity: 0.7;
 }
 
 /* --------------------------------------------------------------- ignition */
+/*
+ * The start gate in the ЮГ-ТРАНСФЕР livery (ui/Ignition.tsx), built from the
+ * same parts as the start-up screen that follows it — the ring vocabulary, the
+ * logo treatment, the field of lights — so the click hands over between two
+ * views of one system rather than between two products.
+ *
+ * Motion is CSS only, and none of it is framer's: see the note in Ignition.tsx
+ * about what an infinite framer animation did to this overlay once. The one
+ * live input is --level, the room's loudness, written by the component.
+ */
 
 .ignition {
+  --ig-core: min(50vmin, 470px);
+  --ig-cy: 53%;
+  --level: 0;
   position: fixed;
   inset: 0;
   z-index: 7;
-  display: grid;
-  place-items: center;
-  background: radial-gradient(ellipse at center, #04121c 0%, #01060c 70%);
+  display: block;
+  margin: 0;
+  padding: 0;
   border: 0;
+  overflow: hidden;
   cursor: pointer;
-  font-family: inherit;
-  color: #4fd6ff;
+  text-align: center;
+  color: var(--silver);
+  font-family: 'Bahnschrift', 'Segoe UI', system-ui, sans-serif;
+  background:
+    radial-gradient(ellipse 55% 45% at 50% var(--ig-cy), rgba(255, 122, 0, 0.13), transparent 72%),
+    radial-gradient(ellipse 120% 90% at 50% 40%, #0c0805 0%, #040302 55%, #000 100%);
+  animation: igIn 0.9s ease both;
 }
+/* Keyboard focus shows on the ring itself, not as a box round the screen. */
+.ignition:focus { outline: none; }
+.ignition:focus-visible .ig-track { stroke: rgba(255, 170, 80, 0.55); }
+@keyframes igIn { from { opacity: 0; } }
 
-.ignition-ring {
+/* The field of lights, as on the start-up screen. */
+.ig-floor {
   position: absolute;
-  width: 240px;
-  height: 240px;
-  border: 1px solid rgba(79, 214, 255, 0.28);
-  border-top-color: rgba(79, 214, 255, 0.9);
-  border-radius: 50%;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 40%;
+  overflow: hidden;
+  perspective: 480px;
+  perspective-origin: 50% 0%;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.7) 40%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.7) 40%, transparent 100%);
+}
+.ig-floor::before {
+  content: '';
+  position: absolute;
+  left: -70%;
+  right: -70%;
+  bottom: 0;
+  height: 320%;
+  transform-origin: 50% 100%;
+  transform: rotateX(74deg);
+  background-image: radial-gradient(circle, rgba(255, 150, 60, 0.85) 0 1.3px, transparent 2px);
+  background-size: 28px 28px;
+  opacity: 0.55;
+  animation: utFloor 4s linear infinite;
 }
 
-.ignition-label {
+/* -- name ---------------------------------------------------------------- */
+
+.ig-head {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 8vh;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
+  padding: 0 16px;
+  animation: igRise 0.9s ease 0.1s both;
 }
-
-.ignition-word {
-  font-size: 15px;
-  letter-spacing: 0.52em;
-  text-indent: 0.52em; /* balance the trailing letter-space */
-  text-shadow: 0 0 30px rgba(79, 214, 255, 0.7);
+.ig-brand {
+  font-size: clamp(30px, 5.4vw, 78px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.07em;
 }
-
-.ignition-sub {
-  font-size: 9px;
-  letter-spacing: 0.28em;
-  opacity: 0.4;
+.ig-brand span {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.ig-ug {
+  background-image: linear-gradient(180deg, #ffc46e 0%, #ff8a14 48%, #e35a00 100%);
+  filter: drop-shadow(0 0 16px rgba(255, 122, 0, 0.55));
+}
+.ig-tr {
+  background-image: linear-gradient(180deg, #ffffff 0%, #ececec 46%, #9a9a9a 100%);
+  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.2));
+}
+.ig-tag {
+  font-size: clamp(11px, 1.1vw, 15px);
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
   text-transform: uppercase;
+  color: var(--silver);
+  opacity: 0.7;
 }
 
-.ignition:hover .ignition-word {
-  text-shadow: 0 0 44px rgba(79, 214, 255, 1);
+/* -- the energy ring ------------------------------------------------------ */
+
+.ig-core {
+  position: absolute;
+  left: 50%;
+  top: var(--ig-cy);
+  width: var(--ig-core);
+  height: var(--ig-core);
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  animation: igCoreIn 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 0.15s both;
+}
+@keyframes igCoreIn {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.86); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+/* Breathing bloom behind the ring. */
+.ig-bloom {
+  position: absolute;
+  inset: -16%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 122, 0, 0.26), rgba(255, 122, 0, 0.07) 62%, transparent);
+  animation: igBreath 3.6s ease-in-out infinite;
+}
+/* And a second light that answers the room: a clap flares it before it
+   powers anything up. Opacity and scale only, so it never repaints. */
+.ig-core::after {
+  content: '';
+  position: absolute;
+  inset: -4%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 176, 70, 0.6), rgba(255, 122, 0, 0.18) 55%, transparent 72%);
+  opacity: var(--level);
+  transform: scale(calc(0.9 + var(--level) * 0.28));
+  pointer-events: none;
+}
+
+.ig-rings {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+/* Rotate about the centre, which is the view box's user-space origin. */
+.ig-rings * { transform-box: view-box; transform-origin: 0 0; fill: none; }
+
+.ig-dots {
+  stroke: #ffa53a;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-dasharray: 0.01 9.74;
+  opacity: 0.8;
+  animation: igSpin 80s linear infinite;
+}
+.ig-track { stroke: rgba(255, 122, 0, 0.16); stroke-width: 12; transition: stroke 200ms ease; }
+
+/* Energy gathering round the ring from twelve o'clock, then let go — the
+   pulse below fires at the moment it completes. Circumference 1068.1. */
+.ig-charge {
+  stroke: #ff8a14;
+  stroke-width: 12;
+  stroke-linecap: round;
+  stroke-dasharray: 1068.1;
+  stroke-dashoffset: 1068.1;
+  transform: rotate(-90deg);
+  filter: drop-shadow(0 0 6px rgba(255, 138, 20, 0.9));
+  animation: igCharge 3.6s cubic-bezier(0.55, 0, 0.45, 1) infinite;
+}
+@keyframes igCharge {
+  0% { stroke-dashoffset: 1068.1; opacity: 0.85; }
+  78% { stroke-dashoffset: 0; opacity: 1; }
+  86% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+.ig-segments {
+  stroke: #3a3a3c;
+  stroke-width: 9;
+  stroke-dasharray: 12 4;
+  opacity: 0.8;
+  animation: igSpin 50s linear infinite reverse;
+}
+.ig-thin { stroke: #ff7a00; stroke-width: 1.5; opacity: 0.9; }
+.ig-thin-dashed { stroke-dasharray: 3 5; opacity: 0.55; }
+
+/* Pulses travelling the inner rings. */
+.ig-comet {
+  stroke: #ffe0b0;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-dasharray: 80 774.5;
+  filter: drop-shadow(0 0 4px #ff8a14);
+  animation: igComet 2.6s linear infinite;
+}
+.ig-comet-rev {
+  stroke: #ff9a3c;
+  stroke-dasharray: 56 723.1;
+  animation: igCometRev 3.8s linear infinite;
+}
+@keyframes igComet {
+  from { stroke-dashoffset: 854.5; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes igCometRev {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: 779.1; }
+}
+
+.ig-disc { fill: #070504; stroke: rgba(255, 122, 0, 0.35); stroke-width: 1; }
+
+/* The release: a ring of light leaving the disc as the charge completes. */
+.ig-pulse {
+  stroke: #ffb35c;
+  stroke-width: 2.5;
+  opacity: 0;
+  animation: igPulse 3.6s ease-out infinite;
+}
+@keyframes igPulse {
+  0%, 78% { opacity: 0; transform: scale(1); }
+  80% { opacity: 0.95; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.75); }
+}
+
+/* The company logo, unaltered; the shift centres its visible mark (the file
+   carries transparent space above it — see .ut-logo). */
+.ig-logo {
+  position: relative;
+  width: 50%;
+  height: auto;
+  transform: translateY(-15.4%);
+  filter: drop-shadow(0 0 12px rgba(255, 122, 0, 0.35));
+  user-select: none;
+  pointer-events: none;
+  animation: igLogo 1.4s ease 0.45s both;
+}
+@keyframes igLogo {
+  from { opacity: 0; transform: translateY(-15.4%) scale(0.9); }
+  to { opacity: 1; transform: translateY(-15.4%) scale(1); }
+}
+
+/* Hovering over it gathers the energy faster — the ring is the button. */
+.ignition:hover .ig-charge,
+.ignition:hover .ig-pulse { animation-duration: 1.8s; }
+
+/* -- words ---------------------------------------------------------------- */
+
+.ig-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--ig-cy) + var(--ig-core) * 0.56);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  animation: igRise 0.9s ease 0.6s both;
+}
+.ig-ready {
+  font-size: clamp(16px, 1.7vw, 24px);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 0 18px rgba(255, 122, 0, 0.55);
+  transition: text-shadow 300ms ease;
+}
+.ignition:hover .ig-ready { text-shadow: 0 0 26px rgba(255, 140, 30, 0.95); }
+.ig-hint {
+  font-size: clamp(12px, 1.05vw, 15px);
+  letter-spacing: 0.05em;
+  color: var(--silver);
+  opacity: 0.72;
+}
+
+@keyframes igSpin { to { transform: rotate(360deg); } }
+@keyframes igBreath {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+@keyframes igRise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 900px), (max-aspect-ratio: 1 / 1) {
+  .ignition { --ig-core: min(72vmin, 400px); --ig-cy: 46%; }
+  .ig-head { top: 6vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ignition,
+  .ignition *,
+  .ignition *::before,
+  .ignition *::after,
+  .ig-core::after {
+    animation: none !important;
+  }
+  .ig-charge { stroke-dashoffset: 0; }
 }
 
 /* ------------------------------------------------------------------- boot */
@@ -1283,9 +2096,7 @@ kbd {
 
 @media (max-width: 900px) {
   .hud-top { padding: 0 46px; }
-  .rail-left { left: 30px; }
   .rail-right { right: 30px; }
-  .log { width: 84vw; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1544,7 +2355,7 @@ kbd {
   font-size: 10px;
   letter-spacing: 0.3em;
   text-transform: uppercase;
-  color: #e6f9ff;
+  color: #f4f2ee;
   text-shadow:
     0 0 18px var(--accent),
     0 0 44px color-mix(in srgb, var(--accent) 55%, transparent);
@@ -1771,20 +2582,20 @@ kbd {
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
   padding: 0.75rem 0.9rem;
-  background: rgba(2, 10, 12, 0.94);
-  border: 1px solid var(--accent, #19d8d2);
+  background: rgba(14, 14, 16, 0.94);
+  border: 1px solid var(--accent, #ff7a00);
   border-radius: 2px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 0.72rem;
   line-height: 1.6;
-  color: #cfe6e3;
+  color: #e8e8ea;
   pointer-events: none;
   backdrop-filter: blur(6px);
 }
 
 .diag-head {
   letter-spacing: 0.18em;
-  color: var(--accent, #19d8d2);
+  color: var(--accent, #ff7a00);
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   padding-bottom: 0.4rem;
   margin-bottom: 0.5rem;
@@ -1801,7 +2612,7 @@ kbd {
 .diag-sec {
   margin: 0.7rem 0 0.3rem;
   letter-spacing: 0.16em;
-  color: #6d8886;
+  color: #8a8a8e;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   padding-top: 0.45rem;
 }
@@ -1812,9 +2623,9 @@ kbd {
   gap: 0.5rem;
 }
 
-.diag-k { color: #6d8886; }
-.diag-v { color: #cfe6e3; overflow-wrap: anywhere; }
-.diag-ok { color: #3ef2a8; }
+.diag-k { color: #8a8a8e; }
+.diag-v { color: #e8e8ea; overflow-wrap: anywhere; }
+.diag-ok { color: #ffb35c; }
 .diag-bad { color: #ff6b6b; }
 
 /* ------------------------------------------------------------------ blades */
@@ -1848,8 +2659,8 @@ kbd {
   padding: 0;
   background: linear-gradient(
     160deg,
-    color-mix(in srgb, var(--accent) 11%, rgba(4, 12, 18, 0.94)),
-    color-mix(in srgb, var(--accent) 4%, rgba(2, 8, 12, 0.96))
+    color-mix(in srgb, var(--accent) 11%, rgba(26, 26, 29, 0.94)),
+    color-mix(in srgb, var(--accent) 4%, rgba(10, 10, 12, 0.96))
   );
   border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
   backdrop-filter: blur(14px);
@@ -1887,8 +2698,8 @@ kbd {
 }
 
 .bl-title {
-  font-size: 10px;
-  letter-spacing: 0.2em;
+  font-size: 12px;
+  letter-spacing: 0.16em;
   color: color-mix(in srgb, var(--accent) 92%, white);
   white-space: nowrap;
   overflow: hidden;
@@ -1896,9 +2707,9 @@ kbd {
 }
 
 .bl-kind {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.14em;
-  opacity: 0.45;
+  opacity: 0.55;
   margin-right: auto;
 }
 
@@ -2071,7 +2882,7 @@ kbd {
   letter-spacing: 0.18em;
   color: color-mix(in srgb, var(--accent) 90%, white);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, rgba(2, 8, 12, 0.8));
+  background: color-mix(in srgb, var(--accent) 10%, rgba(12, 12, 14, 0.8));
   backdrop-filter: blur(8px);
   pointer-events: none;
 }
@@ -2099,7 +2910,7 @@ kbd {
   min-width: 210px;
   padding: 11px 13px 9px;
   border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
-  background: color-mix(in srgb, var(--accent) 8%, rgba(2, 8, 12, 0.86));
+  background: color-mix(in srgb, var(--accent) 8%, rgba(12, 12, 14, 0.86));
   backdrop-filter: blur(10px);
   pointer-events: none;
   text-transform: none;
@@ -2144,22 +2955,6 @@ kbd {
 
 @media (prefers-reduced-motion: reduce) {
   .hands-live::before { animation: none }
-}
-
-/* Spun in CSS, deliberately. Under framer this was an infinitely repeating
-   animation, and AnimatePresence will not unmount a subtree whose animations
-   never end — which left the whole ignition overlay on top of the interface
-   for the entire session, swallowing every click and every pinch. */
-.ignition-ring { animation: ignitionSpin 18s linear infinite }
-
-@keyframes ignitionSpin {
-  from { transform: rotate(0deg) }
-  to   { transform: rotate(360deg) }
-}
-
-
-@media (prefers-reduced-motion: reduce) {
-  .ignition-ring { animation: none }
 }
 
 /* The live camera inside a blade. Mirrored, because a person expects their own

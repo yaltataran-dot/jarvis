@@ -1,21 +1,125 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { useStore, accentFor, type Phase } from '../store'
+import { useStore, accentFor, type Phase, type Turn } from '../store'
 import { Suggestions } from './Suggestions'
 import { BladeSweep, Blades } from './Blades'
 import { Effects } from './Effects'
 import { Pointer } from './Pointer'
 import { GestureGuide } from './GestureGuide'
+import { LANG } from '../config'
 
-const statusText: Record<Phase, string> = {
-  offline: 'OFFLINE',
-  boot: 'INITIALISING',
-  dormant: 'STANDBY — SAY “HEY JARVIS”',
-  waking: 'ONLINE',
-  listening: 'LISTENING',
-  thinking: 'PROCESSING',
-  tooling: 'ACCESSING SYSTEMS',
-  speaking: 'RESPONDING',
+const ru = LANG === 'ru'
+
+/** The interface's own words, in the language he speaks. */
+const t = {
+  sub: ru ? 'Голосовой помощник' : 'Voice assistant',
+  systems: ru ? 'Системы' : 'Systems',
+  noneLinked: ru ? 'нет подключений' : 'none linked',
+  web: ru ? 'Веб' : 'Web',
+  signal: ru ? 'Сигнал' : 'Signal',
+  accessing: ru ? 'обращение' : 'accessing',
+  you: ru ? 'Вы' : 'You',
+  dialog: ru ? 'Диалог' : 'Dialogue',
+  him: ru ? 'Юг-Трансфер' : 'Assistant',
+  cameraOn: ru ? 'Камера включена · G — выключить' : 'Camera on · G to stop',
+  looking: ru ? 'Смотрю' : 'Looking',
+}
+
+const statusText: Record<Phase, string> = ru
+  ? {
+      offline: 'НЕ В СЕТИ',
+      boot: 'ЗАПУСК',
+      dormant: 'ОЖИДАНИЕ — СКАЖИТЕ «ДЖАРВИС»',
+      waking: 'АКТИВАЦИЯ',
+      listening: 'СЛУШАЮ',
+      thinking: 'ОБРАБОТКА ЗАПРОСА',
+      tooling: 'ОБРАЩЕНИЕ К СЕРВИСАМ',
+      speaking: 'ОТВЕТ',
+    }
+  : {
+      offline: 'OFFLINE',
+      boot: 'INITIALISING',
+      dormant: 'STANDBY — SAY “HEY JARVIS”',
+      waking: 'ONLINE',
+      listening: 'LISTENING',
+      thinking: 'PROCESSING',
+      tooling: 'ACCESSING SYSTEMS',
+      speaking: 'RESPONDING',
+    }
+
+/* ------------------------------------------------------------ centre state */
+
+/**
+ * What the centre indicator shows. Five states the user has to be able to tell
+ * apart at a glance — waiting, listening, working, answering, failed — and
+ * because the phase colours are all one brand orange, each has its own motion
+ * and its own label rather than relying on hue.
+ */
+type CoreMode = 'idle' | 'waking' | 'listening' | 'processing' | 'speaking' | 'error'
+
+const coreLabel: Record<CoreMode, string> = ru
+  ? {
+      idle: 'Ожидание',
+      waking: 'Активация',
+      listening: 'Слушаю',
+      processing: 'Обработка',
+      speaking: 'Ответ',
+      error: 'Ошибка',
+    }
+  : {
+      idle: 'Standby',
+      waking: 'Online',
+      listening: 'Listening',
+      processing: 'Processing',
+      speaking: 'Responding',
+      error: 'Error',
+    }
+
+function coreMode(phase: Phase, error: string | null): CoreMode | null {
+  // The start-up has its own screen; nothing of this belongs under it.
+  if (phase === 'offline' || phase === 'boot') return null
+  // A failure outranks whatever phase it left behind — it is the thing to read.
+  if (error) return 'error'
+  switch (phase) {
+    case 'dormant':
+      return 'idle'
+    case 'waking':
+      return 'waking'
+    case 'listening':
+      return 'listening'
+    case 'thinking':
+    case 'tooling':
+      return 'processing'
+    case 'speaking':
+      return 'speaking'
+  }
+}
+
+/**
+ * The company logo at the centre of the reactor, ringed by an indicator that
+ * moves differently in each state and swells with the voice — the user's while
+ * listening, his while answering (`level` already follows whichever is live).
+ * Pure CSS motion, keyed by data-mode; only --level changes per frame.
+ */
+function CoreState({ mode, level }: { mode: CoreMode; level: number }) {
+  return (
+    <div
+      className="core-state"
+      data-mode={mode}
+      style={{ ['--level' as string]: level.toFixed(3) }}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="cs-glow" />
+      <svg className="cs-rings" viewBox="-100 -100 200 200" aria-hidden>
+        <circle r="96" className="cs-ring" />
+        <circle r="96" className="cs-arc" />
+        <circle r="88" className="cs-dash" />
+      </svg>
+      <img className="cs-logo" src="/ug-transfer-logo.png" alt="" draggable={false} />
+      <div className="cs-label">{coreLabel[mode]}</div>
+    </div>
+  )
 }
 
 function Corner({ at }: { at: 'tl' | 'tr' | 'bl' | 'br' }) {
@@ -144,6 +248,202 @@ function DecodeText({ text }: { text: string }) {
   )
 }
 
+/* ---------------------------------------------------------------- systems */
+
+/**
+ * The integrations, folded into a chip at the bottom of the screen.
+ *
+ * This was a rail at the left edge, always open — six lines of server names
+ * standing beside the reactor for the whole session. Folded, it is a chip with
+ * a count and a light; opened, the same list as before, nothing removed.
+ *
+ * The list is always mounted and shown with CSS (data-open), never mounted and
+ * unmounted through AnimatePresence: an exit that does not finish leaves a
+ * layer catching clicks, which is exactly what once happened to Ignition. When
+ * closed it is visibility: hidden and takes no pointer events.
+ *
+ * The light means the bridge has reported its servers — that is the only
+ * availability this app actually knows.
+ */
+function SystemsDock({ connected }: { connected: string[] }) {
+  const [open, setOpen] = useState(false)
+  const items = [...connected, t.web]
+  const live = connected.length > 0
+
+  // Escape folds it too. App's own Escape — "stand down" — is untouched and
+  // still runs alongside; this only adds the fold while the list is open.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  return (
+    <div className="sysdock" data-open={open ? '1' : '0'}>
+      <div className="sysdock-panel" id="sysdock-list" aria-hidden={!open}>
+        <div className="sysdock-head">
+          <span>{t.systems}</span>
+          <button
+            type="button"
+            className="sysdock-close"
+            tabIndex={open ? 0 : -1}
+            aria-label={ru ? 'Свернуть' : 'Collapse'}
+            onClick={(e) => {
+              setOpen(false)
+              e.currentTarget.blur()
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <ul className="sysdock-list">
+          {items.map((c) => (
+            <li key={c} className="sysdock-item">
+              <span className="tick" />
+              {c}
+            </li>
+          ))}
+        </ul>
+        {!live && <div className="sysdock-note">{t.noneLinked}</div>}
+      </div>
+
+      <button
+        type="button"
+        className="sysdock-chip"
+        aria-expanded={open}
+        aria-controls="sysdock-list"
+        title={live ? (ru ? 'Мост сообщил о подключённых системах' : 'Bridge reported its systems') : t.noneLinked}
+        // Space is "talk" everywhere in this app; a focused chip must not
+        // swallow it as a click. Enter still toggles.
+        onKeyDown={(e) => {
+          if (e.key === ' ') e.preventDefault()
+        }}
+        onClick={(e) => {
+          setOpen((o) => !o)
+          // Off the button, so the next Space goes back to talking.
+          e.currentTarget.blur()
+        }}
+      >
+        <svg className="sysdock-icon" viewBox="0 0 16 16" aria-hidden>
+          <rect x="1.5" y="1.5" width="5" height="5" rx="1" />
+          <rect x="9.5" y="1.5" width="5" height="5" rx="1" />
+          <rect x="1.5" y="9.5" width="5" height="5" rx="1" />
+          <rect x="9.5" y="9.5" width="5" height="5" rx="1" />
+        </svg>
+        <span className="sysdock-label">{t.systems}</span>
+        <span className="sysdock-count">{items.length}</span>
+        <span className="sysdock-light" data-live={live ? '1' : '0'} />
+        <span className="sysdock-caret" aria-hidden>
+          ▴
+        </span>
+      </button>
+    </div>
+  )
+}
+
+/* ----------------------------------------------------------------- dialog */
+
+/**
+ * The conversation, in a compact window at the bottom right.
+ *
+ * It used to be a wide band across the bottom of the reactor showing the last
+ * four lines, and it covered the ring. Now it is a corner window holding the
+ * whole history the store keeps, scrolling inside itself, folding to a chip.
+ * Same turns, same rendering — nothing about how lines arrive has changed.
+ *
+ * It follows the newest line as it streams in, unless the user has scrolled up
+ * to read something, in which case it leaves them there until they scroll back
+ * down. Folded, the chip counts lines that arrived since it was folded.
+ *
+ * Shown and hidden with CSS rather than mounted and unmounted, for the same
+ * reason as SystemsDock: an unfinished exit must never leave a layer behind.
+ */
+function DialogDock({ turns }: { turns: Turn[] }) {
+  const [open, setOpen] = useState(true)
+  const [seenAtFold, setSeenAtFold] = useState(0)
+  const body = useRef<HTMLDivElement>(null)
+  /** Following the newest line — false once the user scrolls up to read. */
+  const following = useRef(true)
+
+  const last = turns[turns.length - 1]
+  const lastLength = last?.text.length ?? 0
+  useLayoutEffect(() => {
+    const el = body.current
+    if (el && open && following.current) el.scrollTop = el.scrollHeight
+  }, [turns.length, lastLength, open])
+
+  const unread = open ? 0 : Math.max(0, turns.length - seenAtFold)
+  const hasLines = turns.length > 0
+
+  const toggle = (e: MouseEvent<HTMLButtonElement>) => {
+    if (open) setSeenAtFold(turns.length)
+    else following.current = true
+    setOpen(!open)
+    // Off the button, so the next Space goes back to talking.
+    e.currentTarget.blur()
+  }
+
+  return (
+    <div className="dialog" data-open={open && hasLines ? '1' : '0'}>
+      <div className="dialog-panel" id="dialog-panel" aria-hidden={!(open && hasLines)}>
+        <div
+          className="dialog-body"
+          ref={body}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+          }}
+        >
+          <AnimatePresence initial={false}>
+            {turns.map((turn) => (
+              <motion.div
+                key={turn.id}
+                className={`log-line log-${turn.role}`}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ type: 'spring', stiffness: 320, damping: 32 }}
+              >
+                <span className="log-who">{turn.role === 'user' ? t.you : t.him}</span>
+                {/* Only his half decodes. What the user said was never
+                    transmitted from anywhere — dressing it up as machine
+                    output would be a lie about where the words came from. */}
+                <span className="log-text">
+                  {turn.role === 'jarvis' ? <DecodeText text={turn.text} /> : turn.text}
+                </span>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        className="dialog-chip"
+        aria-expanded={open}
+        aria-controls="dialog-panel"
+        // Space is "talk" everywhere in this app; Enter still toggles.
+        onKeyDown={(e) => {
+          if (e.key === ' ') e.preventDefault()
+        }}
+        onClick={toggle}
+      >
+        <svg className="dialog-icon" viewBox="0 0 16 16" aria-hidden>
+          <path d="M2 3.5h12v7H7l-3 2.5v-2.5H2z" />
+        </svg>
+        <span className="dialog-label">{t.dialog}</span>
+        {unread > 0 && <span className="dialog-unread">{unread}</span>}
+        <span className="dialog-caret" aria-hidden>
+          ▾
+        </span>
+      </button>
+    </div>
+  )
+}
+
 /* --------------------------------------------------------------------- hud */
 
 export function Hud() {
@@ -164,6 +464,7 @@ export function Hud() {
   // variable on the root carries a theme change into every .hud-* rule without
   // a single component knowing a theme exists.
   const colour = accentFor(phase, ui)
+  const mode = coreMode(phase, error)
 
   useEffect(() => {
     // The ground has to be set on the document, not painted here: the HUD sits
@@ -187,11 +488,15 @@ export function Hud() {
       <Corner at="bl" />
       <Corner at="br" />
 
+      {/* Before the log, the blades and the effects, so all of them paint over
+          it: it is the resting centre of the screen, never in the way. */}
+      {mode && <CoreState mode={mode} level={level} />}
+
       <header className="hud-top">
         {ui.chrome.brand && (
           <div className="brand">
-            <span className="brand-mark">J.A.R.V.I.S.</span>
-            <span className="brand-sub">Just A Rather Very Intelligent System</span>
+            <img className="brand-logo" src="/ug-transfer-logo.png" alt="Юг-Трансфер" draggable={false} />
+            <span className="brand-sub">{t.sub}</span>
           </div>
         )}
 
@@ -207,27 +512,12 @@ export function Hud() {
         </div>
       </header>
 
-      {/* Left rail: which integrations are live */}
-      {ui.chrome.systems && (
-        <aside className="rail rail-left">
-          <div className="rail-title">SYSTEMS</div>
-          {connected.length === 0 && <div className="rail-item dim">none linked</div>}
-          {connected.map((c) => (
-            <div key={c} className="rail-item">
-              <span className="tick" />
-              {c}
-            </div>
-          ))}
-          <div className="rail-item">
-            <span className="tick" />
-            Web
-          </div>
-        </aside>
-      )}
+      {/* Which integrations are live — a chip at the bottom, opened on demand. */}
+      {ui.chrome.systems && <SystemsDock connected={connected} />}
 
       {/* Right rail: live telemetry, mostly for flavour */}
       <aside className="rail rail-right">
-        <div className="rail-title">SIGNAL</div>
+        <div className="rail-title">{t.signal}</div>
         <div className="meter">
           <div className="meter-fill" style={{ height: `${level * 100}%` }} />
         </div>
@@ -253,38 +543,15 @@ export function Hud() {
           >
             <span className="tool-kicker">
               <span className="spinner" />
-              accessing
+              {t.accessing}
             </span>
             <span className="tool-name">{activeTool.replace(/[_-]/g, ' ')}</span>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Conversation log — last few turns, fading upward */}
-      {ui.chrome.transcript && (
-        <div className="log">
-          <AnimatePresence initial={false}>
-            {turns.slice(-4).map((t) => (
-              <motion.div
-                key={t.id}
-                className={`log-line log-${t.role}`}
-                initial={{ opacity: 0, y: 14 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                transition={{ type: 'spring', stiffness: 320, damping: 32 }}
-              >
-                <span className="log-who">{t.role === 'user' ? 'YOU' : 'JARVIS'}</span>
-                {/* Only his half decodes. What the user said was never
-                    transmitted from anywhere — dressing it up as machine
-                    output would be a lie about where the words came from. */}
-                <span className="log-text">
-                  {t.role === 'jarvis' ? <DecodeText text={t.text} /> : t.text}
-                </span>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-      )}
+      {/* Conversation log — a compact window in the bottom-right corner */}
+      {ui.chrome.transcript && <DialogDock turns={turns} />}
 
       <AnimatePresence>
         {caption && (
@@ -312,11 +579,19 @@ export function Hud() {
 
       <footer className="hud-bottom">
         <span className="hint">
-          say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>G</kbd> hands
+          {ru ? (
+            <>
+              скажите <b>«Джарвис»</b> · <kbd>Пробел</kbd> — говорить · <kbd>G</kbd> — жесты
+            </>
+          ) : (
+            <>
+              say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>G</kbd> hands
+            </>
+          )}
           {voice && (
             <>
               {' · '}
-              <kbd>V</kbd> voice: {voice.replace(/\(.*?\)/g, '').trim()}
+              <kbd>V</kbd> {ru ? 'голос' : 'voice'}: {voice.replace(/\(.*?\)/g, '').trim()}
             </>
           )}
         </span>
@@ -332,7 +607,7 @@ export function Hud() {
       <Pointer />
       {(gestures || looking) && (
         <div className="hands-live">
-          {looking ? `LOOKING — ${looking.toUpperCase()}` : 'CAMERA ON · G TO STOP'}
+          {looking ? `${t.looking} — ${looking}` : t.cameraOn}
         </div>
       )}
       <GestureGuide live={gestures} />

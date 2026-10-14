@@ -445,16 +445,29 @@ export const useStore = create<State>((set) => ({
     }),
 }))
 
-/** Colour identity per phase — shared by the 3D scene and the 2D HUD. */
+/**
+ * Colour identity per phase — shared by the 3D scene and the 2D HUD.
+ *
+ * The ЮГ-ТРАНСФЕР livery: neon orange on graphite, with silver for the one
+ * phase that is about reaching outward. The oranges sit close together on
+ * purpose — one brand colour, not a rainbow — so the phases are told apart by
+ * brightness here and by the centre indicator's motion and label (Hud.tsx),
+ * never by hue alone.
+ */
 export const phaseColor: Record<Phase, string> = {
-  offline: '#0d4a4a',
-  boot: '#17b3b3',
-  dormant: '#12908f',
-  waking: '#5cf2ef',
-  listening: '#19d8d2',
-  thinking: '#f0a93c',
-  tooling: '#a97bff',
-  speaking: '#3ef2a8',
+  offline: '#3a1d06',
+  boot: '#ff7a00',
+  // Waiting: the brand orange, dimmed.
+  dormant: '#c2601a',
+  waking: '#ffb35c',
+  // Listening: full neon.
+  listening: '#ff8a1c',
+  // Working it out: warm amber-white.
+  thinking: '#ffc878',
+  // Reaching into tools: silver.
+  tooling: '#dfe3e8',
+  // Answering: the deepest, most saturated orange.
+  speaking: '#ff6a00',
 }
 
 /**

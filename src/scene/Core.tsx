@@ -223,10 +223,12 @@ export function Core({ drive }: { drive: Drive }) {
 
   const uniforms = useMemo(
     () => ({
-      uColor: { value: new THREE.Color('#19c4c4') },
+      // Starts on the brand orange; it eases to the phase colour from here.
+      uColor: { value: new THREE.Color('#ff7a00') },
       // Not white — a tinted highlight keeps the hue readable once bloom
-      // stacks on top, instead of washing the ring out to a grey band.
-      uHot: { value: new THREE.Color('#c9fdff') },
+      // stacks on top, instead of washing the ring out to a grey band. Warm,
+      // to sit with the orange rather than against it.
+      uHot: { value: new THREE.Color('#fff0dc') },
       uLevel: { value: 0 },
       uPhase: { value: 0 },
       uOpen: { value: 0 },
