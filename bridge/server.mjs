@@ -28,6 +28,7 @@ import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
+import { effortFor } from './effort.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 
@@ -120,7 +121,16 @@ const MODEL = process.env.JARVIS_MODEL ?? 'claude-opus-5'
  * matters more than pace; drop back to 'low' when filming and every second of
  * dead air shows.
  */
-const EFFORT = process.env.JARVIS_EFFORT ?? 'high'
+const EFFORT = process.env.JARVIS_EFFORT ?? 'medium'
+
+/**
+ * Effort is chosen per question unless JARVIS_EFFORT pins it — see effort.mjs.
+ * 'high' on every turn was measured at 9.6 s to the first word of a bare
+ * multiplication; the session's effort can be changed between turns, so a
+ * short question that needs nothing looked up goes in on 'low' and a request
+ * to analyse or plan on 'high'.
+ */
+const ROUTE_EFFORT = !process.env.JARVIS_EFFORT
 
 /**
  * Both spellings of every renamed built-in are listed on purpose. The SDK
@@ -446,8 +456,9 @@ browser or a web page:
   the sites worth visiting refuse on sight, so they land on a login wall or a
   bot check and waste the turn. Only consider one if \`chrome_status\` reports the
   browser is genuinely unreachable and the task cannot be done any other way.
-- A plain search engine query is still fine for a fact you only need to know —
-  what you must not do is drive some other browser.
+- A question you only need a FACT for is not a browsing task: answer it with
+  WebSearch, not the browser. Chrome is for operating or reading a particular
+  page, or anything behind their login — never for looking something up.
 - Read the page before acting on it, and take element references from that read
   rather than guessing where something is.
 - Before anything that sends, buys, deletes or posts, say in one sentence what
@@ -471,6 +482,21 @@ Your eyes:
   will see it. Curiosity is not a reason.
 - Describe a watch as a sequence — what changed between the frames — not as a
   list of pictures. They know what their own hands look like.
+
+SPEED. The user is waiting in silence while you work; every tool call is
+seconds of it.
+- Answer from what you know when the answer does not change: arithmetic,
+  definitions, history, how things work, general advice. No search for these.
+- Search only for what changes or what you cannot know: weather, prices, rates,
+  news, schedules, opening hours, anything "today", "now" or "latest".
+- One WebSearch is usually enough. Answer from its results; open a page with
+  WebFetch only when the results do not contain the answer, and then one page.
+- When you need several independent lookups, make the calls in the same step so
+  they run at once — never one after another when neither depends on the other.
+- Do not search again for something already found earlier in this conversation
+  unless they ask for an update.
+- Never invent a source or a figure. If the results are old, partial or unclear,
+  say so plainly rather than presenting them as current.
 
 Using tools:
 - You have real tools on this machine. Use them rather than guessing.
@@ -1231,6 +1257,36 @@ wss.on('connection', (socket) => {
   let closed = false
   const inbox = []
 
+  /** The effort the session is on now, so it is only changed when it differs. */
+  let sessionEffort = EFFORT
+
+  /** Set this turn's effort before the question goes in. Never fatal. */
+  const tuneFor = async (text) => {
+    if (!ROUTE_EFFORT) return
+    const want = effortFor(text)
+    if (want === sessionEffort) return
+    try {
+      await session.applyFlagSettings({ effortLevel: want })
+      sessionEffort = want
+      if (TRACE) console.log(`[jarvis] effort ${want}`)
+    } catch (err) {
+      console.warn(`[jarvis] could not set effort ${want}: ${err?.message ?? err}`)
+    }
+  }
+
+  /**
+   * A line for the model, appended to the question, when the user's Chrome is
+   * not reachable. The prompt sends every browsing task to the chrome_* tools
+   * first; with the extension down each of those is a failed call and a whole
+   * extra round trip before the search that actually answers.
+   */
+  const browserNote = async () =>
+    (await chromeAvailable().catch(() => false))
+      ? ''
+      : LANG === 'ru'
+        ? '\n\n(Служебно, не озвучивать: браузер пользователя сейчас недоступен — chrome_* не вызывай, для фактов используй WebSearch.)'
+        : "\n\n(System note, not to be spoken: the user's browser is unavailable right now — do not call chrome_*; use WebSearch for facts.)"
+
   async function* userMessages() {
     while (!closed) {
       const text =
@@ -1239,9 +1295,10 @@ wss.on('connection', (socket) => {
           deliver = resolve
         }))
       if (closed || text == null) return
+      await tuneFor(text)
       yield {
         type: 'user',
-        message: { role: 'user', content: text },
+        message: { role: 'user', content: text + (await browserNote()) },
         parent_tool_use_id: null,
       }
     }
@@ -1452,6 +1509,12 @@ wss.on('connection', (socket) => {
       // without this line nothing in the project has a say at all.
       model: MODEL,
       effort: EFFORT,
+      // Every tool schema up front. Left to defer them, Claude Code made the
+      // model call ToolSearch to load WebSearch before it could search — a
+      // whole extra round trip on the first lookup of every session, measured
+      // in the 20 s it took to answer "what's the weather". This set of tools
+      // is small enough that deferring them saves nothing.
+      env: { ...process.env, ENABLE_TOOL_SEARCH: 'false' },
       maxTurns: 24,
       permissionMode: 'default',
       // Without this the SDK only emits whole assistant messages, and JARVIS
