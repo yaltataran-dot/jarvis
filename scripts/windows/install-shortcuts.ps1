@@ -3,6 +3,11 @@
 #   Остановить JARVIS.lnk — остановить фоновые процессы
 # Повторный запуск безопасен: ярлыки перезаписываются, дубликатов не появляется.
 # Права администратора не нужны.
+#
+#   -CalendarWrites  ярлык запуска разрешает запись в Google Календарь
+#                    (start-jarvis.ps1 -CalendarWrites)
+
+param([switch]$CalendarWrites)
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 
@@ -39,11 +44,11 @@ function New-JarvisIcon([string]$Path) {
   $w.Close()
 }
 
-function New-Shortcut([string]$Path, [string]$Script, [string]$Description, [int]$WindowStyle, [string]$Icon) {
+function New-Shortcut([string]$Path, [string]$Script, [string]$Description, [int]$WindowStyle, [string]$Icon, [string]$Extra = '') {
   $shell = New-Object -ComObject WScript.Shell
   $lnk = $shell.CreateShortcut($Path)
   $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`""
+  $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`"$Extra"
   $lnk.WorkingDirectory = $JarvisRoot
   $lnk.Description = $Description
   $lnk.WindowStyle = $WindowStyle
@@ -59,7 +64,8 @@ $start = Join-Path $desktop 'JARVIS.lnk'
 $stop  = Join-Path $desktop 'Остановить JARVIS.lnk'
 
 New-Shortcut $start (Join-Path $PSScriptRoot 'start-jarvis.ps1') `
-  'Запустить JARVIS (мост + интерфейс) и открыть его в браузере' 1 "$icon,0"
+  'Запустить JARVIS (мост + интерфейс) и открыть его в браузере' 1 "$icon,0" `
+  $(if ($CalendarWrites) { ' -CalendarWrites' } else { '' })
 New-Shortcut $stop (Join-Path $PSScriptRoot 'stop-jarvis.ps1') `
   'Остановить фоновый JARVIS' 7 "$env:SystemRoot\System32\imageres.dll,100"
 

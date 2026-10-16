@@ -8,10 +8,14 @@
 #
 #   -NoBrowser  не открывать браузер (для автозапуска при входе в Windows)
 #   -Writes     разрешить JARVIS реальные действия (как `npm start -- --writes`)
+#   -CalendarWrites  разрешить только запись в Google Календарь
+#               (как `npm start -- --calendar-writes`); каждое действие всё равно
+#               выполняется лишь после своего слова — «записывай», «удаляй»…
 
 param(
   [switch]$NoBrowser,
-  [switch]$Writes
+  [switch]$Writes,
+  [switch]$CalendarWrites
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -91,6 +95,7 @@ foreach ($f in @($LogFile, $ErrFile)) {
 }
 $nodeArgs = @('scripts/start.mjs')
 if ($Writes) { $nodeArgs += '--writes' }
+if ($CalendarWrites) { $nodeArgs += '--calendar-writes' }
 
 $proc = Start-Process -FilePath $node.Source -ArgumentList $nodeArgs `
   -WorkingDirectory $JarvisRoot -WindowStyle Hidden -PassThru `

@@ -7,12 +7,15 @@
  * them down together on Ctrl-C — no extra dependency, just Node.
  *
  * Pass --writes to allow JARVIS to take real actions (drive the phone, the
- * browser, send things): `npm start -- --writes`.
+ * browser, send things): `npm start -- --writes`. Pass --calendar-writes to
+ * allow Google Calendar writes alone: `npm start -- --calendar-writes`.
  */
 
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
+import { exitReason } from './exitReason.mjs'
+import { bridgeEnvFor } from './bridgeEnv.mjs'
 
 /**
  * Put MediaPipe's WebAssembly where the page can actually load it.
@@ -44,8 +47,6 @@ function vendorWasm() {
   }
 }
 
-const writes = process.argv.includes('--writes')
-
 // A dim label per process, so the interleaved logs stay readable.
 const paint = (tag, colour) => (line) =>
   line
@@ -65,20 +66,30 @@ function run(name, command, args, colour, env) {
   })
   child.stdout.on('data', (d) => process.stdout.write(label(d) + '\n'))
   child.stderr.on('data', (d) => process.stderr.write(label(d) + '\n'))
-  child.on('exit', (code) => {
-    // If either half dies the other is useless, so take the whole thing down
-    // rather than leave a half-running app that looks alive but cannot answer.
-    console.log(`\x1b[${colour}m${name}\x1b[0m exited (${code}); stopping the rest.`)
-    shutdown(code ?? 0)
+  child.on('exit', (code, signal) => {
+    // A Ctrl+C or a closed console reaches every process on it at once, so a
+    // child can end a moment before this launcher hears the same signal.
+    // Decide a moment later, so that is reported as the stop it is.
+    setTimeout(() => {
+      const why = exitReason(code, signal)
+      const tag = `\x1b[${colour}m${name}\x1b[0m`
+      // Vite ends with code 1 on Ctrl+C: during a stop that is the stop, not a fault.
+      if (stopping) return console.log(why.stop ? `${tag} stopped: ${why.text}.` : `${tag} ended during the stop (code ${code}).`)
+      // If either half dies the other is useless, so take the whole thing down
+      // rather than leave a half-running app that looks alive but cannot answer.
+      console.log(`${tag} ${why.stop ? 'was stopped' : 'exited'}: ${why.text}; stopping the rest.`)
+      shutdown(why.stop ? 0 : (code ?? 1), `${name} ${why.stop ? 'was stopped' : 'failed'}`)
+    }, 250)
   })
   children.push(child)
   return child
 }
 
 let stopping = false
-function shutdown(code) {
+function shutdown(code, reason) {
   if (stopping) return
   stopping = true
+  console.log(`\nstopping JARVIS — ${reason}.`)
   for (const c of children) {
     try {
       c.kill('SIGTERM')
@@ -86,11 +97,31 @@ function shutdown(code) {
       /* already gone */
     }
   }
-  setTimeout(() => process.exit(code), 300)
+  setTimeout(() => process.exit(code), 600)
 }
 
-process.on('SIGINT', () => shutdown(0))
-process.on('SIGTERM', () => shutdown(0))
+// Ctrl+C, Ctrl+Break, the console window closing (SIGHUP on Windows), or a
+// polite kill: each is a request to stop, and stops both halves together.
+const STOPS = { SIGINT: 'Ctrl+C', SIGBREAK: 'Ctrl+Break', SIGHUP: 'the console window was closed', SIGTERM: 'asked to stop (SIGTERM)' }
+for (const [sig, what] of Object.entries(STOPS)) {
+  try {
+    process.on(sig, () => shutdown(0, what))
+  } catch {
+    /* a signal this platform does not have */
+  }
+}
+// However this process ends, it does not leave a bridge holding the port.
+process.on('exit', () => {
+  for (const c of children) {
+    if (c.exitCode === null && c.signalCode === null) {
+      try {
+        c.kill('SIGTERM')
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+})
 
 /**
  * Tell the bridge which port the face will actually be on.
@@ -105,10 +136,10 @@ process.on('SIGTERM', () => shutdown(0))
  * without widening what the bridge trusts by default.
  */
 const port = process.env.PORT
-const bridgeEnv = writes ? { JARVIS_ALLOW_WRITES: '1' } : {}
-if (port) {
-  bridgeEnv.JARVIS_ALLOWED_ORIGINS = `http://localhost:${port},http://127.0.0.1:${port}`
-  console.log(`  serving the face on port ${port}; the bridge will accept it.\n`)
+const bridgeEnv = bridgeEnvFor(process.argv, process.env)
+if (port) console.log(`  serving the face on port ${port}; the bridge will accept it.\n`)
+if (bridgeEnv.JARVIS_CALENDAR_WRITES) {
+  console.log('  calendar writes allowed for the bridge (--calendar-writes); each still needs its spoken word.\n')
 }
 
 vendorWasm()

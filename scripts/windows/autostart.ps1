@@ -3,13 +3,14 @@
 #   autostart.ps1 -Enable    включить (ярлык в папке «Автозагрузка» текущего пользователя)
 #   autostart.ps1 -Disable   выключить
 #   autostart.ps1            показать текущее состояние
+#   -Enable -CalendarWrites  автозапуск с разрешённой записью в Google Календарь
 #
 # При входе JARVIS стартует скрыто и без браузера; интерфейс открывается ярлыком
 # JARVIS на рабочем столе (он увидит, что всё уже запущено, и просто откроет вкладку).
 # Права администратора не нужны. Выключить можно также в Диспетчере задач →
 # «Автозагрузка приложений».
 
-param([switch]$Enable, [switch]$Disable)
+param([switch]$Enable, [switch]$Disable, [switch]$CalendarWrites)
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 
@@ -20,7 +21,7 @@ if ($Enable) {
   $shell = New-Object -ComObject WScript.Shell
   $lnk = $shell.CreateShortcut($lnkPath)
   $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $PSScriptRoot 'start-jarvis.ps1')`" -NoBrowser"
+  $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $PSScriptRoot 'start-jarvis.ps1')`" -NoBrowser$(if ($CalendarWrites) { ' -CalendarWrites' })"
   $lnk.WorkingDirectory = $JarvisRoot
   $lnk.Description = 'Автозапуск JARVIS в фоне'
   $lnk.WindowStyle = 7
