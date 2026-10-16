@@ -4,10 +4,27 @@ import { lastSoundEnded, speakingNow, speakingSince, speechActive } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 import { trace } from './bridge'
-import { L, OVERRIDE, R, STOP_ONLY } from './stopWords'
-import { isEcho, norm } from './echo'
-import { isBargeIn } from './bargeIn'
-import { makeLedger, type Result } from './ledger'
+import { isEcho } from './echo'
+import { startBrowserVoice } from './browserVoice'
+import {
+  SELF_GUARD_MS,
+  WAKE,
+  WAKE_DEBOUNCE,
+  afterWake,
+  deadVoice,
+  diag,
+  drop,
+  makeAssembler,
+  nextUtteranceId,
+  setVoiceTrace,
+  type Voice,
+  type VoiceHandlers,
+} from './voiceCore'
+
+export { NAME, NAME_END, NAME_PREFIX, diag } from './voiceCore'
+export type { Voice, VoiceHandlers, VoiceMode } from './voiceCore'
+
+setVoiceTrace(trace)
 
 /**
  * The voice loop.
@@ -27,329 +44,10 @@ import { makeLedger, type Result } from './ledger'
  * speakers. That is handled here in text rather than in acoustics — see
  * `isEcho` — because the browser gives SpeechRecognition its own capture and
  * won't let us put a canceller in front of it.
+ *
+ * What both engines share — the wake phrase, the assembler, the diagnostics —
+ * is in voiceCore.ts; the browser engine is in browserVoice.ts.
  */
-
-export type VoiceMode =
-  /** Powered down. Only his name matters. */
-  | 'wake'
-  /** He is expecting you to speak. Everything is a command. */
-  | 'command'
-  /** He is thinking or talking. Anything you say is an interruption. */
-  | 'guard'
-  /** Something is playing that must not be transcribed at all. */
-  | 'deaf'
-
-export type VoiceHandlers = {
-  /** Read fresh on every result, so the app never has to re-subscribe. */
-  mode: () => VoiceMode
-  /** Fired on his name, from a partial — waiting for endpointing feels slow.
-   *  `trailing` is whatever followed it, so "Jarvis, what's the weather" is
-   *  one breath rather than two turns. */
-  onWake: (trailing: string) => void
-  /** The user has genuinely started talking. This is the barge-in trigger. */
-  onSpeechStart: () => void
-  /** Live transcript, for the caption under the reactor. */
-  onPartial: (text: string) => void
-  /** A complete, endpointed utterance. */
-  onUtterance: (text: string) => void
-  /** The recogniser is unusable. Distinct from the user saying nothing. */
-  onError: (message: string) => void
-}
-
-export type Voice = {
-  stop: () => void
-  /** True while a recogniser is actually running. */
-  live: () => boolean
-  /**
-   * He has finished speaking and the user is about to be invited to talk.
-   * Resolves once a recogniser that has not heard him is capturing — true —
-   * or false if none came up in time. See startBrowserVoice.
-   */
-  rearm: () => Promise<boolean>
-}
-
-// ---------------------------------------------------------------------------
-// Endpointing
-// ---------------------------------------------------------------------------
-
-/** One utterance often produces several partials containing his name. */
-const WAKE_DEBOUNCE = 1500
-
-/**
- * His name, and the only wake phrase.
- *
- * The optional prefix is genuinely optional: addressing him by name alone is
- * correct, and during an answer "Jarvis" on its own is the natural way to cut
- * in. The negative lookahead keeps possessives ("Jarvis's job") from waking him.
- *
- * The alternates are not padding. "Jarvis" is not in a general dictation
- * model's high-frequency vocabulary, and Chrome routinely returns Travis,
- * Jervis, Jarvys or Java's for a perfectly clear utterance — every one of which
- * used to be silently discarded, so the wake word "just didn't work" with no
- * indication why. Better a rare false wake than a name that does not answer.
- *
- * Russian recognition does the same to "Джарвис" — Джервис, Жарвис, Джарвиз —
- * and still hands back the Latin spelling now and then, so both alphabets are
- * accepted in both modes.
- *
- * `\b` only knows ASCII letters, so it never matches next to Cyrillic. The
- * boundaries here are Unicode lookarounds instead (`u` flag on every regex
- * built from them).
- */
-export const NAME_PREFIX = '(?:hey|hi|ok|okay|yo|эй|хей|хэй|привет|окей|ок|слушай)'
-export const NAME =
-  "(?:jarvis's|jarvis|jarvys|jervis|travis|jarviss|java's|jarv|" +
-  'джарвис|джарвиз|джарвес|джервис|жарвис|чарвис|джарви)'
-/** Ends a name, Unicode-aware — for callers building their own patterns. */
-export const NAME_END = R
-
-const WAKE = new RegExp(`${L}(?:${NAME_PREFIX}[\\s,]*)?${NAME}${R}(?!'s)`, 'iu')
-
-/** Everything after the wake phrase, which is usually the actual command. */
-function afterWake(text: string): string {
-  const m = WAKE.exec(text)
-  if (!m) return ''
-  return text
-    .slice(m.index + m[0].length)
-    .replace(/^[\s,.:;!?-]+/, '')
-    .trim()
-}
-
-// ---------------------------------------------------------------------------
-// Assembling one utterance out of several segments
-// ---------------------------------------------------------------------------
-
-/**
- * Why this exists.
- *
- * The voice-activity detector is an energy gate, and energy is a fact about the
- * room rather than about the sentence. It ends a segment after a fixed quiet
- * gap, so "what's the weather in — " *pause* " — London" is two segments, two
- * transcripts and, before this, two turns: the first one asking the model a
- * truncated question, the second arriving as a bare noun with no question left
- * to attach it to. People pause. They pause to think of the word, to look at
- * something, mid-list, before the important part. An assistant that treats the
- * first gap as the end of the thought is one you have to talk to carefully, and
- * having to talk carefully is the whole failure.
- *
- * So the segment is no longer the turn. Transcripts accumulate here, and the
- * turn fires only when the text looks finished AND the room has gone quiet.
- *
- * Crucially this costs nothing in the common case. A complete sentence with no
- * one speaking fires immediately — `holdFor` returns 0 — so the latency of an
- * ordinary question is exactly what it was. The waiting only happens when there
- * is a reason to wait.
- */
-
-/**
- * Ending on one of these means the sentence is not over, whatever the silence
- * says. Function words only: they are closed-class, so the list is complete in
- * a way a content-word list could never be, and none of them is a plausible
- * last word of a real request.
- */
-const CONTINUES = new RegExp(
-  `${L}(?:and|or|but|so|because|since|if|when|while|that|which|who|whose|to|of|in|on|at|by|for|with|from|about|into|onto|over|under|between|through|the|a|an|my|your|his|her|its|our|their|is|are|was|were|be|been|do|does|did|have|has|had|can|could|would|should|will|shall|might|must|like|than|then|as|very|really|just|some|any|all|both|either|neither|` +
-    // The Russian closed class: conjunctions, prepositions, possessives.
-    `и|или|а|но|что|чтобы|потому|поэтому|если|когда|пока|который|которая|которое|которые|в|во|на|о|об|обо|про|с|со|к|ко|по|за|из|от|до|для|у|при|над|под|между|через|без|мой|моя|моё|мое|мои|твой|ваш|ваша|наш|наша|их|его|её|ее|как|чем|же|ли|очень|самый|самая|самое)$`,
-  'iu',
-)
-
-/** Trailing punctuation a transcriber emits mid-thought. */
-const TRAILS = /[,;:–—-]$/
-
-/**
- * A barge-in this soon after he starts a sentence is him, not you.
- *
- * Echo cancellation and the raised guard threshold stop most of his playback
- * reaching the detector, but the attack of the very first syllable is the
- * loudest, least-cancelled thing in the whole answer — it arrives before the
- * canceller has adapted to it. Without this, a long answer could interrupt
- * itself on its own first word, which reads as JARVIS refusing to speak.
- *
- * Kept short deliberately. This is the one window where a genuine interruption
- * is also least likely: the user has not yet heard enough to want to stop him.
- */
-const SELF_GUARD_MS = 350
-
-/**
- * How long rearm() waits for a fresh recogniser session to start capturing.
- * Chrome usually takes a few hundred ms; past this the user is invited anyway
- * and told the recogniser is not up.
- */
-const READY_MS = 2000
-
-/** How long after sending a phrase its own late final result is recognised as such. */
-const LATE_FINAL_MS = 5000
-
-/**
- * A quiet gap this long with a finished-looking sentence ends the turn.
- *
- * Small on purpose: by the time a transcript reaches the assembler the detector
- * has already sat through SILENCE_MS of quiet and the transcriber has taken its
- * own few hundred milliseconds, so roughly a second of real silence has passed
- * already. All this window has to catch is someone drawing breath to add one
- * more clause. Making it generous here is what would make every ordinary
- * question feel slow.
- */
-const SETTLE_MS = 250
-/** ...and this long when the sentence is plainly unfinished. */
-const CONTINUE_MS = 1600
-/**
- * Nothing is held longer than this in total. A ceiling rather than a timer:
- * without it, someone who ends every clause on "and" could hold a turn open
- * for ever, and the assistant would look like it had stopped listening.
- */
-const MAX_HOLD_MS = 6000
-
-/**
- * How long to keep waiting, given what has been said so far.
- * 0 means "this is a complete thought, send it now".
- */
-function holdFor(text: string): number {
-  const words = text.trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return CONTINUE_MS
-  // An explicit terminator is the speaker telling us they are done.
-  if (/[.!?]$/.test(text)) return 0
-  if (TRAILS.test(text.trim())) return CONTINUE_MS
-  if (CONTINUES.test(words[words.length - 1])) return CONTINUE_MS
-  // One or two words is usually the start of something, not the whole of it —
-  // except for the short commands that genuinely are complete.
-  if (words.length <= 2 && !OVERRIDE.test(text)) return CONTINUE_MS
-  return SETTLE_MS
-}
-
-type Assembler = {
-  /** Add a transcript. `active` is true if the user is audibly still going. */
-  feed: (text: string, active: boolean) => void
-  /** Send whatever is held right now, if anything. */
-  flush: () => void
-  /** Throw away whatever is held — used when he stands down. */
-  cancel: () => void
-  held: () => string
-}
-
-function makeAssembler(h: {
-  emit: (text: string) => void
-  partial: (text: string) => void
-}): Assembler {
-  let held = ''
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let firstAt = 0
-
-  const clear = () => {
-    if (timer) clearTimeout(timer)
-    timer = null
-  }
-
-  const fire = () => {
-    clear()
-    const text = held.trim()
-    held = ''
-    firstAt = 0
-    trace('voice:utterance', { len: text.length })
-    if (text) h.emit(text)
-  }
-
-  return {
-    feed(text, active) {
-      if (!text.trim()) return
-      held = `${held} ${text}`.replace(/\s+/g, ' ').trim()
-      if (!firstAt) firstAt = Date.now()
-      // The caption shows the whole thought as it assembles, not just the
-      // fragment that happened to arrive last.
-      h.partial(held)
-      diag.holding = held
-      clear()
-
-      // Already talking again. Decide nothing now — the next transcript is
-      // part of this same sentence and will bring more of it.
-      if (active) {
-        timer = setTimeout(fire, MAX_HOLD_MS)
-        return
-      }
-
-      const wait = Math.min(
-        holdFor(held),
-        Math.max(0, MAX_HOLD_MS - (Date.now() - firstAt)),
-      )
-      diag.waitedMs = wait
-      if (wait === 0) {
-        fire()
-        return
-      }
-      timer = setTimeout(fire, wait)
-    },
-    flush: fire,
-    cancel() {
-      clear()
-      held = ''
-      firstAt = 0
-      diag.holding = ''
-    },
-    held: () => held,
-  }
-}
-
-// Hearing himself — `isEcho` and `norm` live in echo.ts.
-
-// ---------------------------------------------------------------------------
-// Diagnostics
-// ---------------------------------------------------------------------------
-
-/**
- * Live state of the voice loop, published on `window.__voice`.
- *
- * When someone says the wake word and nothing happens there are only a handful
- * of possible causes — the recogniser never started, it started and died, it is
- * running but hearing silence, or it is hearing you and transcribing the name
- * as something else. From outside the page those are indistinguishable, which
- * makes the failure impossible to report and impossible to fix. This tells them
- * apart in one glance.
- */
-export const diag = {
-  /** Which input engine is running: 'elevenlabs' (VAD+Scribe) or 'browser'. */
-  engine: 'browser',
-  /** Whether the microphone pipeline is live. */
-  running: false,
-  /** Speech segments captured since load. */
-  sessions: 0,
-  /** The most recent transcript, whatever the mode. */
-  heard: '',
-  heardAt: 0,
-  /** Last failure — a transcription error, or a capture error. */
-  lastError: '',
-  /** Times the wake word matched. */
-  wakes: 0,
-  /** Current mode, as the app last reported it. */
-  mode: '',
-  /** Why the last transcript was ignored — '' when it was accepted. */
-  dropped: '',
-  /** Transcripts accepted and passed to the app. */
-  accepted: 0,
-  /** Text assembled but not yet sent, because the thought looks unfinished. */
-  holding: '',
-  /** How long the assembler decided to wait before sending, in ms. */
-  waitedMs: 0,
-  /** Barge-ins suppressed because he had only just started the sentence. */
-  selfGuarded: 0,
-  /** Transcription failures (network, or the bridge speech proxy). */
-  restarts: 0,
-  /** Sessions restarted after he finished speaking, to drop late results. */
-  resyncs: 0,
-  /** Milliseconds the last transcription round-trip took. */
-  idleMs: 0,
-}
-
-/** Record why a transcript went nowhere. Silence always has a reason; this is
- *  the difference between debugging it and speculating about it. */
-function drop(why: string) {
-  diag.dropped = why
-  trace('voice:drop', { why: why.slice(0, 60) })
-}
-
-if (typeof window !== 'undefined') {
-  ;(window as unknown as Record<string, unknown>).__voice = diag
-}
 
 /**
  * Pick the voice engine and start it.
@@ -369,15 +67,22 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
     await getMic()
   } catch (err) {
     diag.lastError = 'mic'
+    trace('voice:mic-failed', { name: (err as DOMException)?.name ?? 'unknown' })
     h.onError(
       err instanceof DOMException && err.name === 'NotAllowedError'
         ? 'Microphone access denied — voice input is unavailable.'
         : 'No microphone available.',
     )
-    return { stop: () => {}, live: () => false, rearm: async () => false }
+    return deadVoice()
   }
   diag.engine = caps().stt ? 'elevenlabs' : 'browser'
-  return caps().stt ? startElevenVoice(h) : startBrowserVoice(h)
+  return caps().stt
+    ? startElevenVoice(h)
+    : startBrowserVoice(h, {
+        Ctor: (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null,
+        lang: LANG,
+        speech: { speakingSince, speechActive, lastSoundEnded, speakingNow },
+      })
 }
 
 /** VAD + ElevenLabs Scribe. */
@@ -398,8 +103,15 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
    * Order is preserved because the drain is single-flight, which matters —
    * "London" arriving before "what's the weather in" is worse than either.
    */
-  const pendingAudio: Blob[] = []
+  const pendingAudio: Array<{ blob: Blob; his: boolean }> = []
   let draining = false
+  /**
+   * The segment being captured began in his own first syllable — the guard
+   * below refused it as a barge-in. Its words are his, not the user's: let
+   * through as a transcript they became the next question, and he answered
+   * himself.
+   */
+  let segmentIsHis = false
 
   /**
    * Transcripts become turns here rather than one-per-segment.
@@ -410,7 +122,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       diag.dropped = ''
       diag.accepted++
       diag.holding = ''
-      h.onUtterance(text)
+      h.onUtterance(text, nextUtteranceId())
     },
     partial: (text) => h.onPartial(text),
   })
@@ -423,9 +135,13 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
    * transcript arriving — and the transcript belongs to the mode the user is in
    * now, not the one they interrupted.
    */
-  const transcribe = async (blob: Blob) => {
+  const transcribe = async ({ blob, his }: { blob: Blob; his: boolean }) => {
     const mode = h.mode()
     if (mode === 'deaf') return
+    if (his) {
+      drop('his own first syllable')
+      return
+    }
     const t0 = performance.now()
     try {
       const res = await fetch(`${BRIDGE_HTTP_URL}/stt`, {
@@ -500,6 +216,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       const mode = h.mode()
       diag.mode = mode
       diag.sessions++
+      segmentIsHis = false
       if (mode === 'deaf') return
       // Standing down mid-thought throws the thought away with it. Otherwise
       // held text would surface as the opening of the *next* conversation.
@@ -511,13 +228,15 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
         const since = speakingSince()
         if (since && Date.now() - since < SELF_GUARD_MS) {
           diag.selfGuarded++
+          segmentIsHis = true
           return
         }
         h.onSpeechStart()
       }
     },
     onEnd: (blob) => {
-      pendingAudio.push(blob)
+      pendingAudio.push({ blob, his: segmentIsHis })
+      segmentIsHis = false
       void drain()
     },
     onLevel: (v) => {
@@ -553,6 +272,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
   }, 200)
 
   return {
+    ok: () => true,
     stop: () => {
       clearInterval(guardPoll)
       assemble.cancel()
@@ -563,451 +283,5 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
     // The detector never stops for his speech — echo cancellation and the
     // guard threshold handle it — so there is nothing to bring up.
     rearm: async () => vad?.live() ?? false,
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/* Browser fallback: SpeechRecognition                                        */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The keyless path. Uses the browser's own SpeechRecognition for both detection
- * and transcription, so a student who has configured nothing still gets voice.
- *
- * It is the flakier engine — Chrome throttles it and it can go silent with no
- * event to catch — so a heartbeat watches it and forces a fresh session
- * whenever it stops showing signs of life. That single guard is the difference
- * between "the wake word stopped working halfway through the lesson" and an
- * assistant that keeps listening.
- */
-function startBrowserVoice(h: VoiceHandlers): Voice {
-  const Ctor =
-    (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
-  if (!Ctor) {
-    h.onError('This browser has no speech recognition — use Chrome or Edge, or add an ElevenLabs key.')
-    return { stop: () => {}, live: () => false, rearm: async () => false }
-  }
-
-  let stopped = false
-  let running = false
-  /**
-   * The one live recogniser. Every handler checks it is still this one: an
-   * aborted session goes on to fire its own `end`, and that stale `end` used
-   * to null out its replacement and schedule another start — two recognisers
-   * running at once, every phrase handled twice.
-   */
-  let rec: any = null
-  /**
-   * When the live session was created. A session created after his last sound
-   * cannot hold any of it — see hearsHim.
-   */
-  let sessionAt = 0
-  /** Which of the live session's results have already been dealt with. */
-  const ledger = makeLedger()
-  /** rearm() calls waiting for a session to start capturing. */
-  let ready: ((ok: boolean) => void)[] = []
-  const settleReady = (ok: boolean) => {
-    const waiting = ready
-    ready = []
-    for (const r of waiting) r(ok)
-  }
-  let settled = ''
-  let interim = ''
-  let started = false
-  let barged = false
-  let lastWake = 0
-  let lastAlive = Date.now()
-  let silenceTimer: ReturnType<typeof setTimeout> | null = null
-
-  /** Same assembly rules as the premium path — a pause is not a full stop. */
-  const assemble = makeAssembler({
-    emit: (text) => {
-      diag.dropped = ''
-      diag.accepted++
-      diag.holding = ''
-      h.onUtterance(text)
-    },
-    partial: (text) => h.onPartial(text),
-  })
-
-  /** The last phrase handed on as speech, normalised, and when — see onResult. */
-  let lastSent = ''
-  let lastSentAt = 0
-
-  const touch = () => {
-    lastAlive = Date.now()
-  }
-
-  const clearSilence = () => {
-    if (silenceTimer) clearTimeout(silenceTimer)
-    silenceTimer = null
-  }
-
-  /**
-   * Is the live session hearing him?
-   *
-   * While he speaks, yes. In the AUDIBLE_GUARD_MS after, only if the session
-   * was already running while he spoke: its pending results can still hold his
-   * voice. A session started after he fell quiet — rearm() starts one the
-   * moment he finishes — holds nothing of his, so holding it to the guard only
-   * threw away the first words of the reply he had just invited.
-   */
-  const hearsHim = () =>
-    speakingSince() !== 0 || (speechActive() && sessionAt <= lastSoundEnded())
-
-  /** Everything heard so far is dealt with: sent, or deliberately dropped. */
-  const reset = () => {
-    clearSilence()
-    settled = ''
-    interim = ''
-    started = false
-    barged = false
-    ledger.commit()
-  }
-
-  const emit = () => {
-    const text = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
-    const mode = h.mode()
-    reset()
-    trace('voice:emit', { mode, len: text.length, text: text.slice(0, 40) })
-    if (!text || mode === 'deaf') return
-    // Never a command while he is audible — see onResult.
-    if (hearsHim()) {
-      drop('heard while he was speaking')
-      return
-    }
-    if (isEcho(text, speakingNow())) {
-      drop('echo of his own voice')
-      return
-    }
-    diag.heard = text
-    diag.heardAt = Date.now()
-    if (mode === 'wake') {
-      assemble.cancel()
-      if (WAKE.test(text) && Date.now() - lastWake > WAKE_DEBOUNCE) {
-        lastWake = Date.now()
-        diag.wakes++
-        diag.dropped = ''
-        diag.accepted++
-        h.onWake(afterWake(text))
-      } else {
-        drop(`heard "${text.slice(-40)}" — not his name`)
-      }
-      return
-    }
-    // The recogniser has already endpointed on its own 900ms gap; the assembler
-    // decides whether that gap actually ended the thought. `false` because a
-    // result only reaches here once the recogniser has gone quiet.
-    lastSent = norm(text)
-    lastSentAt = Date.now()
-    assemble.feed(text, false)
-  }
-
-  const bumpSilence = () => {
-    clearSilence()
-    // Endpoint on a short quiet gap; the ElevenLabs path tunes this more
-    // finely, but a fixed window is plenty for the fallback.
-    silenceTimer = setTimeout(emit, 900)
-  }
-
-  const onResult = (e: any) => {
-    touch()
-    const mode = h.mode()
-    diag.mode = mode
-    // Only what has not been dealt with already — see ledger.ts. Read in every
-    // mode, so whatever is dropped below is known to have been seen.
-    const list: Result[] = []
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      list[i] = { transcript: e.results[i][0].transcript, isFinal: e.results[i].isFinal }
-    }
-    const read = ledger.read(list, e.resultIndex)
-    const fresh = read.fresh
-    interim = read.interim
-    if (mode === 'deaf') {
-      interim = ''
-      return
-    }
-    const heard = `${settled}${fresh} ${interim}`.replace(/\s+/g, ' ').trim()
-    if (!heard) return
-
-    /**
-     * He is audible, so the microphone is hearing the speakers.
-     *
-     * This engine has no echo cancellation against the page's own audio, and
-     * the text match in isEcho is not enough on its own: the recogniser
-     * garbles synthetic speech, his answer scored as new words, cut him off as
-     * a barge-in, and was sent back to him as a question — he answered himself
-     * in a loop. So while he speaks nothing he might be saying is a command.
-     *
-     * One thing gets through: a standalone stop ("стоп", "хватит, сэр"), the
-     * whole phrase and nothing else. An interim one is taken at once so stop is
-     * instant — unless he is saying that very word himself right now, when it
-     * waits for the final. Everything else is discarded, along with whatever
-     * had accumulated, and the session is restarted once he falls quiet (see
-     * the resync below), so late results from his speech cannot surface either.
-     */
-    if (hearsHim()) {
-      const said = `${fresh} ${interim}`.replace(/\s+/g, ' ').trim()
-      if (mode !== 'wake' && STOP_ONLY.test(said)) {
-        const his = new Set(norm(speakingNow()).split(' '))
-        const echoed = norm(said)
-          .split(' ')
-          .some((w) => his.has(w))
-        if (!echoed || fresh.trim()) {
-          reset()
-          lastSent = norm(said)
-          lastSentAt = Date.now()
-          diag.heard = said
-          diag.heardAt = Date.now()
-          diag.accepted++
-          diag.dropped = ''
-          trace('voice:stop-while-speaking', { text: said.slice(0, 30) })
-          h.onSpeechStart()
-          h.onUtterance(said)
-          return
-        }
-      }
-      reset()
-      drop('heard while he was speaking')
-      return
-    }
-
-    if (isEcho(`${fresh} ${interim}`, speakingNow())) {
-      interim = ''
-      return
-    }
-    // The recogniser finalising a phrase that has already been sent. Chrome's
-    // final result can land after the 900ms endpoint fired, when he is already
-    // thinking, and the repeat counted as a barge-in that cancelled the very
-    // question it repeats. A stop word always gets through.
-    if (mode === 'guard' && Date.now() - lastSentAt < LATE_FINAL_MS) {
-      const now = norm(`${fresh} ${interim}`)
-      if (now && lastSent.startsWith(now) && !OVERRIDE.test(now)) {
-        interim = ''
-        drop('late final of the question just sent')
-        return
-      }
-    }
-
-    if (mode === 'wake') {
-      settled += fresh
-      if (WAKE.test(heard) && Date.now() - lastWake > WAKE_DEBOUNCE) {
-        lastWake = Date.now()
-        diag.wakes++
-        const trailing = afterWake(heard)
-        reset()
-        h.onWake(trailing)
-      } else if (settled.length > 400) {
-        settled = ''
-      }
-      return
-    }
-
-    settled += fresh
-    const full = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
-    if (!started || (mode === 'guard' && !barged)) {
-      if (mode === 'guard') {
-        // An override word cuts through everything below it — "stop" has to
-        // work on the first syllable or it is not a stop button.
-        if (!OVERRIDE.test(full)) {
-          // His own first syllable, same as the premium path. This engine has
-          // no energy gate, so without the clock the only defence is the word
-          // count below, and a single clear word is exactly what leaks first.
-          const since = speakingSince()
-          if (since && Date.now() - since < SELF_GUARD_MS) {
-            diag.selfGuarded++
-            return
-          }
-          // Two words before this engine believes an interruption. The energy
-          // path can be instant because it triggers on loudness the canceller
-          // has already had a pass at; here the evidence is a transcript of
-          // audio that includes his own playback, and one word of that is not
-          // evidence of anything. And they must be final words: an interim
-          // guess the recogniser later withdraws cancelled the question in
-          // flight and left nothing to replace it — see bargeIn.ts.
-          if (!isBargeIn(settled, interim)) return
-        }
-      }
-      started = true
-      if (mode === 'guard') barged = true
-      h.onSpeechStart()
-    }
-    diag.dropped = ''
-    // Show the whole thought, not just the fragment being spoken now — there
-    // may be an earlier half of it held by the assembler.
-    const carried = assemble.held()
-    h.onPartial(carried ? `${carried} ${full}` : full)
-    bumpSilence()
-  }
-
-  const spin = () => {
-    // One recogniser at a time: `rec` is set from creation, not from `start`,
-    // so a second call while the first is still starting does nothing.
-    if (stopped || rec) return
-    const r = new Ctor()
-    rec = r
-    sessionAt = Date.now()
-    // A new session numbers its results from 0 again.
-    ledger.clear()
-    r.continuous = true
-    r.interimResults = true
-    r.lang = LANG === 'ru' ? 'ru-RU' : 'en-GB'
-    r.onstart = () => {
-      if (r !== rec) return
-      running = true
-      diag.running = true
-      diag.sessions++
-      touch()
-      trace('voice:session', { afterHim: sessionAt > lastSoundEnded() })
-      // Capturing now: whoever was waiting to invite the user can.
-      if (!hearsHim()) settleReady(true)
-    }
-    r.onresult = (e: any) => {
-      if (r === rec) onResult(e)
-    }
-    r.onerror = (ev: any) => {
-      if (r !== rec) return
-      diag.lastError = String(ev.error ?? '')
-      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
-        stopped = true
-        diag.running = false
-        settleReady(false)
-        h.onError('Microphone access was refused — voice input is unavailable.')
-      }
-    }
-    r.onend = () => {
-      // A session we already replaced is not ours to restart.
-      if (r !== rec) return
-      running = false
-      diag.running = false
-      touch()
-      rec = null
-      if (!stopped) setTimeout(spin, 80)
-    }
-    try {
-      r.start()
-    } catch {
-      if (rec === r) rec = null
-      running = false
-      setTimeout(spin, 250)
-    }
-  }
-
-  /**
-   * Drop the live session — and every result it was still holding — and start
-   * a fresh one. Its own `end` handler is replaced (see `rec`), so this is the
-   * only thing that schedules the next start.
-   *
-   * The next session starts the moment the old one reports it has let go of
-   * the microphone, rather than after a fixed beat: every millisecond here is
-   * deafness at exactly the point he has just asked the user to speak. The
-   * timer is only the fallback for an `end` that never comes; spin() starts
-   * one session however many of them fire.
-   */
-  const restart = () => {
-    const r = rec
-    rec = null
-    running = false
-    diag.running = false
-    touch()
-    if (r) r.onend = () => spin()
-    try {
-      r?.abort()
-    } catch {
-      /* already gone */
-    }
-    setTimeout(spin, 150)
-  }
-
-  spin()
-
-  // The heartbeat. If nothing has been heard from the engine for a while it has
-  // gone quiet on us — tear it down and build a fresh one.
-  const health = setInterval(() => {
-    if (stopped) return
-    const idle = Date.now() - lastAlive
-    diag.idleMs = idle
-    if (idle < 15000) return
-    diag.restarts++
-    restart()
-  }, 5000)
-
-  /**
-   * Resync when he falls quiet. Chrome keeps finalising audio for a while after
-   * hearing it, so a session that ran through his answer can still hand back a
-   * piece of it after he stopped — which used to arrive as the next command.
-   * When he stops being audible (his last sound plus a guard), anything
-   * accumulated is thrown away and the session restarted from clean — unless
-   * rearm() has already done that: a session started after his last sound has
-   * nothing of his to drop, and what it holds is the user.
-   */
-  let wasAudible = false
-  const resync = setInterval(() => {
-    if (stopped) return
-    const audible = hearsHim()
-    if (audible && !wasAudible) reset()
-    if (!audible && wasAudible && sessionAt <= lastSoundEnded()) {
-      reset()
-      diag.resyncs++
-      trace('voice:resync')
-      restart()
-    }
-    wasAudible = audible
-  }, 100)
-
-  return {
-    stop: () => {
-      stopped = true
-      clearInterval(health)
-      clearInterval(resync)
-      clearSilence()
-      assemble.cancel()
-      diag.running = false
-      try {
-        rec?.abort()
-      } catch {
-        /* noop */
-      }
-    },
-    live: () => running,
-    /**
-     * Have a session that has not heard him capturing before the user is
-     * invited to speak.
-     *
-     * The old order: he finished, the app played the listening cue at once,
-     * and the session that had heard him was held to the audible guard for
-     * 700 ms, then aborted and replaced, and the replacement took its own time
-     * to start — up to a second and a half of deafness straight after the cue,
-     * which is when people start talking. The first words were simply lost.
-     *
-     * Now the session is replaced the moment he finishes — dropping his tail
-     * just as the resync would have — and this resolves once the new one is
-     * capturing, so the cue is a promise the microphone can keep. It never
-     * starts a second recogniser: spin() refuses while one exists.
-     */
-    rearm: () =>
-      new Promise<boolean>((resolve) => {
-        if (stopped) return resolve(false)
-        // He is still talking; there is nothing to rearm until he stops.
-        if (speakingSince() !== 0) return resolve(running)
-        if (rec && running && !hearsHim()) return resolve(true)
-        const timer = setTimeout(() => {
-          ready = ready.filter((r) => r !== done)
-          trace('voice:rearm-timeout', { running })
-          resolve(running && !hearsHim())
-        }, READY_MS)
-        const done = (ok: boolean) => {
-          clearTimeout(timer)
-          resolve(ok)
-        }
-        ready.push(done)
-        // Otherwise a session is already on its way and will settle this.
-        if (rec && sessionAt <= lastSoundEnded()) {
-          reset()
-          diag.resyncs++
-          trace('voice:rearm')
-          restart()
-        }
-      }),
   }
 }

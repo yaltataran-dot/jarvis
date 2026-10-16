@@ -93,6 +93,14 @@ export const diag = {
   rescued: 0,
   voice: '',
   lastText: '',
+  /** Speakers cut off mid-answer. */
+  cuts: 0,
+  /**
+   * The last cut, as it found the speaker: whether sound was coming out (an
+   * audio element or the OS voice), and how many sentences were waiting and
+   * thrown away with the unspoken rest of the stream.
+   */
+  lastCut: { playing: false, dropped: 0 },
 }
 
 if (typeof window !== 'undefined') {
@@ -532,6 +540,8 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
 
   let currentAudio: HTMLAudioElement | null = null
   let nativeInFlight = false
+  /** The sentence this speaker has put in `speaking`, while it is there. */
+  let saying = ''
   let drained: Array<() => void> = []
 
   const settleDrained = () => {
@@ -623,6 +633,7 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
   async function speakOne(item: Item): Promise<void> {
     if (cancelled) return
     setSpeaking(item.heard)
+    saying = item.heard
     try {
       const url = item.audio ? await item.audio : null
       if (cancelled) return
@@ -653,6 +664,7 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
       }
     } finally {
       if (speaking === item.heard) setSpeaking('')
+      saying = ''
     }
   }
 
@@ -889,11 +901,20 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
     cancel() {
       if (cancelled) return
       cancelled = true
+      diag.cuts++
+      diag.lastCut = {
+        playing: Boolean(currentAudio) || nativeInFlight,
+        dropped: queue.length + (buffer.trim() ? 1 : 0),
+      }
       buffer = ''
       queue.length = 0
       // Keep the echo tail: the words already in the air still have to be
       // recognised and discarded, even though he has stopped adding to them.
-      setSpeaking('')
+      // Only this speaker's own sentence, though: `speaking` is the page's one
+      // record of what is audible, and clearing another speaker's sentence
+      // opened the microphone to it — he heard himself as a command.
+      if (saying && speaking === saying) setSpeaking('')
+      saying = ''
 
       // Only reach for the global cancel if this speaker actually has a native
       // utterance out — speechSynthesis.cancel() is document-wide and would

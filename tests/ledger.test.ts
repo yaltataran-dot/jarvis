@@ -54,6 +54,20 @@ test('interim and final are kept apart, and nothing is spent until committed', (
   assert.deepEqual(l.read(event(1, [' файл effort', true]), 1), { fresh: ' файл effort', interim: '' })
 })
 
+test('extended: words finishing a result already dealt with, not a result of their own', () => {
+  const l = makeLedger()
+  l.read(event(0, ['какая погода', false]), 0)
+  assert.equal(l.extended(), false)
+  l.commit()
+  l.read(event(0, ['какая погода в москве', true]), 0)
+  assert.equal(l.extended(), true, 'the same result, finished')
+  l.commit()
+  l.read(event(1, ['а в питере', true]), 1)
+  assert.equal(l.extended(), false, 'a new result')
+  l.read(event(0, ['какая погода в москве', true]), 0)
+  assert.equal(l.extended(), false, 'a repeat adds nothing')
+})
+
 test('a new session starts its indices again', () => {
   const l = makeLedger()
   l.read(event(0, ['стоп', true]), 0)

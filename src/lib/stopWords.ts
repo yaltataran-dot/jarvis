@@ -43,3 +43,15 @@ export const STOP_ONLY = new RegExp(
   `^(?:${STOP_FILLER}[\\s,.!?]+)*${STOP_WORD}(?:[\\s,.!?]+(?:${STOP_WORD}|${STOP_FILLER}))*[\\s,.!?]*$`,
   'iu',
 )
+
+/**
+ * A stop at the end of what the microphone heard, whatever came before it:
+ * "сегодня в москве солнечно стоп". While he speaks the recogniser hears his
+ * voice and the user's as one phrase, so the stop is rarely alone in it — but
+ * it is the newest thing said, so it is at the end. Only fillers may follow.
+ * Group 1 is the stop itself.
+ */
+export const STOP_TAIL = new RegExp(
+  `${L}(${STOP_WORD}(?:[\\s,.!?]+${STOP_WORD})*)${R}(?:[\\s,.!?]+${STOP_FILLER}${R})*[\\s,.!?]*$`,
+  'iu',
+)

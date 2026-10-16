@@ -24,6 +24,12 @@ export type Ledger = {
    * nobody has dealt with yet, final and interim apart.
    */
   read: (results: ArrayLike<Result>, from: number) => { fresh: string; interim: string }
+  /**
+   * The last read's final words carried on a result already dealt with — the
+   * phrase just sent, finalised with more of it than was sent — rather than
+   * starting a result of their own.
+   */
+  extended: () => boolean
   /** Everything read so far has been dealt with — sent, or deliberately dropped. */
   commit: () => void
   /** A new session: its indices start again from 0. */
@@ -37,16 +43,19 @@ export function makeLedger(): Ledger {
   let seen: string[] = []
   /** The transcript of each result as it stood when it was dealt with. */
   let spent: (string | undefined)[] = []
+  let extended = false
 
   return {
     read(results, from) {
       let fresh = ''
       let interim = ''
+      extended = false
       for (let i = from; i < results.length; i++) {
         const { transcript, isFinal } = results[i]
         seen[i] = transcript
         const text = unspent(transcript, spent[i])
         if (isFinal) {
+          if (text && spent[i] !== undefined) extended = true
           fresh += text
           // A final never changes again, so a second delivery of it is the
           // same words, not more of them.
@@ -57,12 +66,14 @@ export function makeLedger(): Ledger {
       }
       return { fresh, interim }
     },
+    extended: () => extended,
     commit() {
       spent = seen.slice()
     },
     clear() {
       seen = []
       spent = []
+      extended = false
     },
   }
 }
