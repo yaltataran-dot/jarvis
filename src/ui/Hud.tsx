@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useStore, accentFor, type Phase, type Turn } from '../store'
 import { Suggestions } from './Suggestions'
@@ -7,8 +7,19 @@ import { Effects } from './Effects'
 import { Pointer } from './Pointer'
 import { GestureGuide } from './GestureGuide'
 import { LANG } from '../config'
+import { HUD_IN } from '../lib/bootTimeline'
+import { coreMode, type CoreMode } from '../lib/coreMode'
 
 const ru = LANG === 'ru'
+
+/** The root's variables: the phase colour, and when it comes up after the
+ *  start-up scene (HUD_IN). */
+const HUD_VARS = (accent: string) =>
+  ({
+    '--accent': accent,
+    '--hud-in-delay': `${HUD_IN.DELAY_MS}ms`,
+    '--hud-in': `${HUD_IN.FADE_MS}ms`,
+  }) as CSSProperties
 
 /** The interface's own words, in the language he speaks. */
 const t = {
@@ -55,7 +66,6 @@ const statusText: Record<Phase, string> = ru
  * because the phase colours are all one brand orange, each has its own motion
  * and its own label rather than relying on hue.
  */
-type CoreMode = 'idle' | 'waking' | 'listening' | 'processing' | 'speaking' | 'error'
 
 const coreLabel: Record<CoreMode, string> = ru
   ? {
@@ -74,26 +84,6 @@ const coreLabel: Record<CoreMode, string> = ru
       speaking: 'Responding',
       error: 'Error',
     }
-
-function coreMode(phase: Phase, error: string | null): CoreMode | null {
-  // The start-up has its own screen; nothing of this belongs under it.
-  if (phase === 'offline' || phase === 'boot') return null
-  // A failure outranks whatever phase it left behind — it is the thing to read.
-  if (error) return 'error'
-  switch (phase) {
-    case 'dormant':
-      return 'idle'
-    case 'waking':
-      return 'waking'
-    case 'listening':
-      return 'listening'
-    case 'thinking':
-    case 'tooling':
-      return 'processing'
-    case 'speaking':
-      return 'speaking'
-  }
-}
 
 /**
  * The company logo at the centre of the reactor, ringed by an indicator that
@@ -453,6 +443,7 @@ export function Hud() {
   const activeTool = useStore((s) => s.activeTool)
   const connected = useStore((s) => s.connected)
   const error = useStore((s) => s.error)
+  const errorKind = useStore((s) => s.errorKind)
   const level = useStore((s) => s.level)
   const voice = useStore((s) => s.voice)
   const bootNote = useStore((s) => s.bootNote)
@@ -464,7 +455,7 @@ export function Hud() {
   // variable on the root carries a theme change into every .hud-* rule without
   // a single component knowing a theme exists.
   const colour = accentFor(phase, ui)
-  const mode = coreMode(phase, error)
+  const mode = coreMode(phase, error, errorKind)
 
   useEffect(() => {
     // The ground has to be set on the document, not painted here: the HUD sits
@@ -477,7 +468,12 @@ export function Hud() {
   }, [ui.background])
 
   return (
-    <div className="hud" style={{ ['--accent' as string]: colour }}>
+    <div
+      className="hud"
+      // Hidden under the start-up scene, then brought up as it opens.
+      data-live={phase === 'offline' || phase === 'boot' ? undefined : ''}
+      style={HUD_VARS(colour)}
+    >
       {/* First in the tree on purpose. Everything after it is positioned with
           `z-index: auto`, so paint order is document order and the sweep stays
           behind the transcript and the panels without a z-index war. */}

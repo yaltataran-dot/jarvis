@@ -56,6 +56,17 @@ body::after {
   z-index: 1;
 }
 
+/* Voice waves either side of the ring — ui/VoiceWaves.tsx. Over the 3D scene,
+   under the instruments and everything you can read or press. */
+.voice-waves {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+}
+
 /* --------------------------------------------------------------------- HUD */
 
 .hud {
@@ -64,7 +75,12 @@ body::after {
   z-index: 4;
   pointer-events: none;
   color: var(--accent);
-  transition: color 600ms ease;
+  /* Comes up as the start-up scene opens into it (see HUD_IN in
+     lib/bootTimeline.ts): the visibility flips at the start of the fade. */
+  transition:
+    color 600ms ease,
+    opacity var(--hud-in, 1.2s) ease var(--hud-in-delay, 0s),
+    visibility 0s linear var(--hud-in-delay, 0s);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   font-size: 13px;
@@ -72,6 +88,16 @@ body::after {
      whatever the browser fell back to. Bahnschrift ships with Windows 10/11,
      has Cyrillic, and is the same squared technical cut as the start screen. */
   font-family: 'Bahnschrift', 'Segoe UI', 'Chakra Petch', system-ui, sans-serif;
+}
+
+/* Mounted from the start — ready — but not shown while the start-up scene is
+   up: nothing of the working screen shows through it, whatever its opacity
+   at any moment. Hidden, not just transparent, so nothing in it can be hit
+   either. */
+.hud:not([data-live]) {
+  opacity: 0;
+  visibility: hidden;
+  transition: none;
 }
 
 .corner {
@@ -1347,22 +1373,11 @@ kbd {
 
 /* --------------------------------------------------------------- ignition */
 /*
- * The start gate in the ЮГ-ТРАНСФЕР livery (ui/Ignition.tsx), built from the
- * same parts as the start-up screen that follows it — the ring vocabulary, the
- * logo treatment, the field of lights — so the click hands over between two
- * views of one system rather than between two products.
- *
- * Motion is CSS only, and none of it is framer's: see the note in Ignition.tsx
- * about what an infinite framer animation did to this overlay once. The one
- * live input is --level, the room's loudness, written by the component.
+ * The start gate (ui/Ignition.tsx): nothing but the button, the whole screen
+ * wide, over the splash — the splash itself is the start-up scene in Boot.tsx.
  */
 
 .ignition {
-  /* The ring is the whole screen's subject now that it carries no words: in
-     the middle, and large enough to fill the room the name and captions left. */
-  --ig-core: min(66vmin, 640px);
-  --ig-cy: 50%;
-  --level: 0;
   position: fixed;
   inset: 0;
   z-index: 7;
@@ -1370,217 +1385,12 @@ kbd {
   margin: 0;
   padding: 0;
   border: 0;
-  overflow: hidden;
+  background: transparent;
   cursor: pointer;
-  text-align: center;
-  color: var(--silver);
-  font-family: 'Bahnschrift', 'Segoe UI', system-ui, sans-serif;
-  background:
-    radial-gradient(ellipse 55% 45% at 50% var(--ig-cy), rgba(255, 122, 0, 0.13), transparent 72%),
-    radial-gradient(ellipse 120% 90% at 50% 40%, #0c0805 0%, #040302 55%, #000 100%);
-  animation: igIn 0.9s ease both;
 }
-/* Keyboard focus shows on the ring itself, not as a box round the screen. */
+/* Keyboard focus shows as a faint frame, not the browser box. */
 .ignition:focus { outline: none; }
-.ignition:focus-visible .ig-track { stroke: rgba(255, 170, 80, 0.55); }
-@keyframes igIn { from { opacity: 0; } }
-
-/* The field of lights, as on the start-up screen. */
-.ig-floor {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 40%;
-  overflow: hidden;
-  perspective: 480px;
-  perspective-origin: 50% 0%;
-  pointer-events: none;
-  -webkit-mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.7) 40%, transparent 100%);
-  mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.7) 40%, transparent 100%);
-}
-.ig-floor::before {
-  content: '';
-  position: absolute;
-  left: -70%;
-  right: -70%;
-  bottom: 0;
-  height: 320%;
-  transform-origin: 50% 100%;
-  transform: rotateX(74deg);
-  background-image: radial-gradient(circle, rgba(255, 150, 60, 0.85) 0 1.3px, transparent 2px);
-  background-size: 28px 28px;
-  opacity: 0.55;
-  animation: utFloor 4s linear infinite;
-}
-
-/* -- the energy ring ------------------------------------------------------ */
-
-.ig-core {
-  position: absolute;
-  left: 50%;
-  top: var(--ig-cy);
-  width: var(--ig-core);
-  height: var(--ig-core);
-  transform: translate(-50%, -50%);
-  display: grid;
-  place-items: center;
-  animation: igCoreIn 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 0.15s both;
-}
-@keyframes igCoreIn {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.86); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-}
-
-/* Breathing bloom behind the ring. */
-.ig-bloom {
-  position: absolute;
-  inset: -16%;
-  border-radius: 50%;
-  background: radial-gradient(closest-side, rgba(255, 122, 0, 0.26), rgba(255, 122, 0, 0.07) 62%, transparent);
-  animation: igBreath 3.6s ease-in-out infinite;
-}
-/* And a second light that answers the room: a clap flares it before it
-   powers anything up. Opacity and scale only, so it never repaints. */
-.ig-core::after {
-  content: '';
-  position: absolute;
-  inset: -4%;
-  border-radius: 50%;
-  background: radial-gradient(closest-side, rgba(255, 176, 70, 0.6), rgba(255, 122, 0, 0.18) 55%, transparent 72%);
-  opacity: var(--level);
-  transform: scale(calc(0.9 + var(--level) * 0.28));
-  pointer-events: none;
-}
-
-.ig-rings {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-/* Rotate about the centre, which is the view box's user-space origin. */
-.ig-rings * { transform-box: view-box; transform-origin: 0 0; fill: none; }
-
-.ig-dots {
-  stroke: #ffa53a;
-  stroke-width: 3.5;
-  stroke-linecap: round;
-  stroke-dasharray: 0.01 9.74;
-  opacity: 0.8;
-  animation: igSpin 80s linear infinite;
-}
-.ig-track { stroke: rgba(255, 122, 0, 0.16); stroke-width: 12; transition: stroke 200ms ease; }
-
-/* Energy gathering round the ring from twelve o'clock, then let go — the
-   pulse below fires at the moment it completes. Circumference 1068.1. */
-.ig-charge {
-  stroke: #ff8a14;
-  stroke-width: 12;
-  stroke-linecap: round;
-  stroke-dasharray: 1068.1;
-  stroke-dashoffset: 1068.1;
-  transform: rotate(-90deg);
-  filter: drop-shadow(0 0 6px rgba(255, 138, 20, 0.9));
-  animation: igCharge 3.6s cubic-bezier(0.55, 0, 0.45, 1) infinite;
-}
-@keyframes igCharge {
-  0% { stroke-dashoffset: 1068.1; opacity: 0.85; }
-  78% { stroke-dashoffset: 0; opacity: 1; }
-  86% { stroke-dashoffset: 0; opacity: 1; }
-  100% { stroke-dashoffset: 0; opacity: 0; }
-}
-
-.ig-segments {
-  stroke: #3a3a3c;
-  stroke-width: 9;
-  stroke-dasharray: 12 4;
-  opacity: 0.8;
-  animation: igSpin 50s linear infinite reverse;
-}
-.ig-thin { stroke: #ff7a00; stroke-width: 1.5; opacity: 0.9; }
-.ig-thin-dashed { stroke-dasharray: 3 5; opacity: 0.55; }
-
-/* Pulses travelling the inner rings. */
-.ig-comet {
-  stroke: #ffe0b0;
-  stroke-width: 3.5;
-  stroke-linecap: round;
-  stroke-dasharray: 80 774.5;
-  filter: drop-shadow(0 0 4px #ff8a14);
-  animation: igComet 2.6s linear infinite;
-}
-.ig-comet-rev {
-  stroke: #ff9a3c;
-  stroke-dasharray: 56 723.1;
-  animation: igCometRev 3.8s linear infinite;
-}
-@keyframes igComet {
-  from { stroke-dashoffset: 854.5; }
-  to { stroke-dashoffset: 0; }
-}
-@keyframes igCometRev {
-  from { stroke-dashoffset: 0; }
-  to { stroke-dashoffset: 779.1; }
-}
-
-.ig-disc { fill: #070504; stroke: rgba(255, 122, 0, 0.35); stroke-width: 1; }
-
-/* The release: a ring of light leaving the disc as the charge completes. */
-.ig-pulse {
-  stroke: #ffb35c;
-  stroke-width: 2.5;
-  opacity: 0;
-  animation: igPulse 3.6s ease-out infinite;
-}
-@keyframes igPulse {
-  0%, 78% { opacity: 0; transform: scale(1); }
-  80% { opacity: 0.95; transform: scale(1); }
-  100% { opacity: 0; transform: scale(1.75); }
-}
-
-/* The company logo, unaltered; the shift centres its visible mark (the file
-   carries transparent space above it — see .ut-logo). */
-.ig-logo {
-  position: relative;
-  width: 50%;
-  height: auto;
-  transform: translateY(-15.4%);
-  filter: drop-shadow(0 0 12px rgba(255, 122, 0, 0.35));
-  user-select: none;
-  pointer-events: none;
-  animation: igLogo 1.4s ease 0.45s both;
-}
-@keyframes igLogo {
-  from { opacity: 0; transform: translateY(-15.4%) scale(0.9); }
-  to { opacity: 1; transform: translateY(-15.4%) scale(1); }
-}
-
-/* Hovering over it gathers the energy faster — the ring is the button. */
-.ignition:hover .ig-charge,
-.ignition:hover .ig-pulse { animation-duration: 1.8s; }
-
-@keyframes igSpin { to { transform: rotate(360deg); } }
-@keyframes igBreath {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
-}
-
-@media (max-width: 900px), (max-aspect-ratio: 1 / 1) {
-  .ignition { --ig-core: min(80vmin, 480px); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ignition,
-  .ignition *,
-  .ignition *::before,
-  .ignition *::after,
-  .ig-core::after {
-    animation: none !important;
-  }
-  .ig-charge { stroke-dashoffset: 0; }
-}
+.ignition:focus-visible { box-shadow: inset 0 0 0 2px rgba(255, 150, 60, 0.35); }
 
 /* ------------------------------------------------------------------- boot */
 /*
@@ -1591,15 +1401,27 @@ kbd {
  * is a single small path.
  */
 
+/* The layer AnimatePresence fades out at the end (frame 07). */
+.ut-boot-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
 .ut-boot {
   --ut-orange: #ff7a00;
   --ut-amber: #ffa53a;
   --ut-hot: #ffd6a3;
   --ut-graphite: #3a3a3c;
   /* Size and vertical centre of the ring core; the platform, reflection and
-     checklist are placed from these. */
-  --ut-core: min(60vmin, 600px);
-  --ut-cy: 57%;
+     checklist are placed from these. As the splash reference has it — a
+     little above the middle, room for the bar below — and the same on the
+     greeting screen, so the handover never moves the ring. */
+  --ut-core: min(60vmin, 620px);
+  --ut-cy: 44%;
+  /* The room's loudness before the start, written by Ignition.tsx. */
+  --level: 0;
   position: fixed;
   inset: 0;
   z-index: 6;
@@ -1613,6 +1435,22 @@ kbd {
   /* Bahnschrift ships with Windows 10/11 and has Cyrillic, which Chakra Petch
      does not; no download either way. */
   font-family: 'Bahnschrift', 'Segoe UI', 'Roboto Condensed', system-ui, sans-serif;
+}
+/* The exit: the rings open out to the assistant's own ring — centred on the
+   screen, the heavy arcs (0.75 of the core) at its diameter, about 62% of the
+   height — and dissolve into it. */
+.ut-boot[data-exiting] {
+  --ut-core: 83vmin;
+  --ut-cy: 50%;
+}
+
+/* The sparks, the wave of light and the streams — ui/EnergyField.tsx. */
+.ut-energy {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 /* -- depth --------------------------------------------------------------- */
@@ -1631,14 +1469,17 @@ kbd {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 46%;
+  height: 36%;
   overflow: hidden;
   perspective: 480px;
   perspective-origin: 50% 0%;
   pointer-events: none;
   -webkit-mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.8) 40%, transparent 100%);
   mask-image: linear-gradient(to top, #000 0%, rgba(0, 0, 0, 0.8) 40%, transparent 100%);
+  /* There from the first frame, under the whole scene; goes with the exit. */
+  transition: opacity 1.4s ease;
 }
+.ut-boot[data-exiting] .ut-floor { opacity: 0; transition-duration: 0.6s; }
 .ut-floor-plane {
   position: absolute;
   left: -70%;
@@ -1671,8 +1512,17 @@ kbd {
     0 0 16px rgba(255, 122, 0, 0.85),
     inset 0 0 22px rgba(255, 122, 0, 0.45),
     0 0 70px rgba(255, 122, 0, 0.3);
-  animation: utPlatform 3.4s ease-in-out infinite;
+  animation: utPlatform 9s ease-in-out infinite;
 }
+/* The platform and its reflection, faint, from the first frame. Faded through
+   filter: the slow breath above already owns opacity. */
+.ut-platform,
+.ut-reflection {
+  filter: opacity(0.6);
+  transition: filter 1s ease;
+}
+.ut-boot[data-exiting] .ut-platform,
+.ut-boot[data-exiting] .ut-reflection { filter: opacity(0); transition-duration: 0.5s; }
 .ut-platform::after {
   content: '';
   position: absolute;
@@ -1680,7 +1530,7 @@ kbd {
   border-radius: 50%;
   border: 1px solid rgba(255, 190, 120, 0.45);
 }
-@keyframes utPlatform { 50% { opacity: 0.6; } }
+@keyframes utPlatform { 50% { opacity: 0.86; } }
 
 .ut-reflection {
   position: absolute;
@@ -1693,125 +1543,6 @@ kbd {
   pointer-events: none;
 }
 
-/* -- header: frame, name, bar ---------------------------------------------- */
-
-.ut-header {
-  position: absolute;
-  left: 50%;
-  top: 5vh;
-  width: min(94vw, 1500px);
-  aspect-ratio: 1200 / 128;
-  transform: translateX(-50%);
-  animation: utHeaderIn 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-@keyframes utHeaderIn {
-  from { opacity: 0; transform: translate(-50%, -14px); }
-  to { opacity: 1; transform: translate(-50%, 0); }
-}
-
-.ut-frame {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-.ut-frame-line { fill: none; stroke-width: 2.5; }
-.ut-frame-inner { fill: rgba(255, 122, 0, 0.05); stroke: rgba(255, 170, 90, 0.35); stroke-width: 1; }
-.ut-frame-tick { fill: none; stroke: rgba(255, 170, 90, 0.5); stroke-width: 1.5; }
-.ut-frame-slash { fill: var(--ut-orange); }
-.ut-frame-graphite { stroke: #5a5a5c; stroke-width: 5; }
-
-/* Small lights running round the frame's contour. */
-.ut-glint {
-  fill: none;
-  stroke: #fff3e0;
-  stroke-width: 3;
-  stroke-linecap: round;
-  stroke-dasharray: 22 978;
-  animation: utGlint 7s linear infinite;
-}
-.ut-glint-2 { stroke: #ffb35c; animation-delay: -3.5s; }
-@keyframes utGlint {
-  from { stroke-dashoffset: 1000; }
-  to { stroke-dashoffset: 0; }
-}
-
-/* The name, in the "techno" cut: Bahnschrift's semi-condensed width, a forward
-   slant and a lighter weight, a quarter smaller than before, so it reads as a
-   label on the panel and leaves the core to carry the screen. Semi-condensed
-   is a named instance on Windows; font-stretch reaches the same width through
-   the variable font where the name is not matched. Centred in the band between
-   the top of the name plate and the bar. */
-.ut-title {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 38%;
-  margin: 0;
-  text-align: center;
-  white-space: nowrap;
-  font-family: 'Bahnschrift SemiCondensed', 'Bahnschrift', 'Roboto Condensed', 'Segoe UI', system-ui, sans-serif;
-  font-stretch: 87.5%;
-  font-size: clamp(14px, 3.1vw, 48px);
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: 0.08em;
-  transform: translateY(-50%) skewX(-10deg);
-}
-.ut-title span {
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-/* Glow kept close to the letters, so the edges stay sharp. */
-.ut-title-ug {
-  margin-right: 0.32em;
-  background-image: linear-gradient(180deg, #ffc46e 0%, #ff8a14 48%, #e35a00 100%);
-  filter: drop-shadow(0 0 5px rgba(255, 122, 0, 0.4));
-}
-.ut-title-tr {
-  background-image: linear-gradient(180deg, #ffffff 0%, #ececec 46%, #a8a8a8 100%);
-  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.14));
-}
-
-.ut-bar {
-  position: absolute;
-  left: 7%;
-  right: 7%;
-  top: 70%;
-  height: 11%;
-  display: flex;
-  gap: 0.4%;
-  overflow: hidden;
-}
-.ut-bar-cell {
-  flex: 1;
-  transform: skewX(-28deg);
-  background: linear-gradient(#3d3d3f, #232325);
-  transition: background 0.4s ease, box-shadow 0.4s ease;
-}
-.ut-bar-cell[data-on='1'] {
-  background: linear-gradient(#ffb24c, #ff7a00);
-  box-shadow: 0 0 10px rgba(255, 122, 0, 0.75);
-}
-.ut-bar-cell[data-next='1'] { animation: utCharge 1.1s ease-in-out infinite; }
-@keyframes utCharge { 50% { background: #7a4210; } }
-.ut-bar-sheen {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 12%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
-  animation: utSheen 2.8s ease-in-out infinite;
-  pointer-events: none;
-}
-@keyframes utSheen {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(840%); }
-}
-
 /* -- core: rings and logo ------------------------------------------------- */
 
 .ut-core {
@@ -1821,7 +1552,62 @@ kbd {
   width: var(--ut-core);
   height: var(--ut-core);
   transform: translate(-50%, -50%);
-  animation: utCoreIn 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 0.15s both;
+  /* Lit and turning from the first frame; only its brightness moves, eased,
+     between the acts — and its place and size at the exit. */
+  filter: brightness(1);
+  transition:
+    top 0.9s cubic-bezier(0.45, 0, 0.2, 1),
+    width 0.9s cubic-bezier(0.45, 0, 0.2, 1),
+    height 0.9s cubic-bezier(0.45, 0, 0.2, 1),
+    filter 1.4s ease;
+}
+/* The click: a little brighter, eased in. The greeting screen: softer. */
+.ut-boot[data-engaged] .ut-core { filter: brightness(var(--ut-engage-brightness)); }
+.ut-boot[data-greet] .ut-core {
+  filter: brightness(var(--ut-greet-brightness));
+  transition-duration: var(--ut-handover);
+}
+/* The exit: to the centre, out to the working ring's size, all together. */
+.ut-boot[data-exiting] .ut-core {
+  transition-duration: var(--ut-exit-rings);
+  transition-timing-function: cubic-bezier(0.45, 0, 0.2, 1);
+}
+.ut-boot[data-exiting] .ut-rings-wake,
+.ut-boot[data-exiting] .ut-core-flare,
+.ut-boot[data-exiting] .ut-logo-glow,
+.ut-boot[data-exiting] .ut-core::before {
+  opacity: 0;
+  transition: opacity var(--ut-exit-rings) ease;
+}
+/* Its breath owns opacity while it runs; the exit's fade needs it back. */
+.ut-boot[data-exiting] .ut-logo-glow { animation: none; }
+
+/* The whole ring's own slow turn, on top of each ring's. */
+.ut-rings-wake { position: absolute; inset: 0; animation: utSpin 36s linear infinite; }
+
+/* The glow round the ring: steady at each act, eased between, never pulsed. */
+.ut-core-flare {
+  position: absolute;
+  inset: -16%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 190, 110, 0.5), rgba(255, 122, 0, 0.22) 55%, transparent 74%);
+  opacity: 0.55;
+  transition: opacity 0.8s ease;
+  pointer-events: none;
+}
+.ut-boot[data-engaged] .ut-core-flare { opacity: 0.66; transition-duration: 1.2s; }
+.ut-boot[data-greet] .ut-core-flare { opacity: 0.42; transition-duration: var(--ut-handover); }
+
+/* A clap, before the start: a second light that answers the room. Opacity and
+   scale only, so it never repaints. */
+.ut-clap {
+  position: absolute;
+  inset: -4%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 176, 70, 0.6), rgba(255, 122, 0, 0.18) 55%, transparent 72%);
+  opacity: calc(var(--level) * 0.6);
+  transform: scale(calc(0.94 + var(--level) * 0.12));
+  pointer-events: none;
 }
 /* Bloom behind the rings — a static gradient, so it costs nothing per frame. */
 .ut-core::before {
@@ -1831,10 +1617,6 @@ kbd {
   border-radius: 50%;
   background: radial-gradient(closest-side, rgba(255, 122, 0, 0.16), rgba(255, 122, 0, 0.06) 62%, transparent);
   pointer-events: none;
-}
-@keyframes utCoreIn {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.86); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 
 .ut-rings {
@@ -1847,7 +1629,7 @@ kbd {
    off to the lower right. */
 .ut-rings * { transform-box: view-box; transform-origin: 0 0; }
 
-.ut-ticks line { stroke: rgba(255, 160, 80, 0.35); stroke-width: 1.2; }
+.ut-ticks line { stroke: rgba(255, 190, 120, 0.6); stroke-width: 1.2; }
 .ut-ring { fill: none; }
 
 .ut-dots {
@@ -1885,12 +1667,12 @@ kbd {
   stroke-width: 3.5;
   stroke-linecap: round;
   stroke-dasharray: 90 808.5;
-  animation: utComet 2.8s linear infinite;
+  animation: utComet 6.5s linear infinite;
 }
 .ut-comet-rev {
   stroke: #ff9a3c;
   stroke-dasharray: 60 775.7;
-  animation: utCometRev 4.2s linear infinite;
+  animation: utCometRev 9.5s linear infinite;
 }
 @keyframes utComet {
   from { stroke-dashoffset: 898.5; }
@@ -1902,19 +1684,6 @@ kbd {
 }
 
 .ut-disc { stroke: rgba(255, 122, 0, 0.35); stroke-width: 1; }
-
-/* A ring of light leaving the disc every few seconds. */
-.ut-shock {
-  fill: none;
-  stroke: #ff9a3c;
-  stroke-width: 2;
-  opacity: 0;
-  animation: utShock 3.6s ease-out 1.2s infinite;
-}
-@keyframes utShock {
-  0% { transform: scale(1); opacity: 0.85; }
-  100% { transform: scale(1.62); opacity: 0; }
-}
 
 .ut-spin-slow { animation: utSpin 70s linear infinite; }
 .ut-spin-rev { animation: utSpin 46s linear infinite reverse; }
@@ -1936,7 +1705,15 @@ kbd {
   transform: translate(-50%, -65.4%);
   user-select: none;
   pointer-events: none;
+  transition: width var(--ut-exit-logo) cubic-bezier(0.3, 0, 0.2, 1);
 }
+/* The exit: the logo settles to exactly the size of the working screen's own
+   (.cs-logo: 78% of the core state's --cs), in the same place — the screen
+   centre, the same centring shift — so the one hands over to the other
+   without a second logo ever showing beside the first. */
+.ut-boot[data-exiting] .ut-logo { width: calc(clamp(150px, 21vmin, 250px) * 0.78); }
+/* A steady warmth behind the logo, its size fixed: a slow breath of a few
+   percent, never a pulse. */
 .ut-logo-glow {
   position: absolute;
   left: 50%;
@@ -1946,78 +1723,19 @@ kbd {
   border-radius: 50%;
   background: radial-gradient(closest-side, rgba(255, 122, 0, 0.55), rgba(255, 122, 0, 0));
   transform: translate(-50%, -50%);
-  animation: utGlow 3.2s ease-in-out infinite;
+  opacity: 0.6;
+  animation: utGlow 11s ease-in-out infinite;
   pointer-events: none;
 }
 @keyframes utGlow {
-  0%, 100% { opacity: 0.35; transform: translate(-50%, -50%) scale(0.92); }
-  50% { opacity: 0.85; transform: translate(-50%, -50%) scale(1.06); }
+  50% { opacity: 0.68; }
 }
 
-/* -- checklist ------------------------------------------------------------ */
-
-.ut-steps {
-  position: absolute;
-  left: clamp(16px, 4.2vw, 80px);
-  top: var(--ut-cy);
-  width: clamp(250px, 27vw, 440px);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  transform: translateY(-50%);
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: clamp(10px, 0.92vw, 14px);
-  letter-spacing: 0.05em;
-  color: #dadada;
-}
-.ut-step {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6em;
-  line-height: 2.3;
-  opacity: 0;
-  animation: utStepIn 0.45s ease forwards;
-}
-@keyframes utStepIn {
-  from { opacity: 0; transform: translateX(-10px); }
-  to { opacity: 1; transform: none; }
-}
-.ut-step-caret { color: var(--ut-amber); }
-.ut-step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ut-step-leader {
-  flex: 1;
-  min-width: 1.5em;
-  border-bottom: 1px dotted rgba(220, 220, 220, 0.4);
-  transform: translateY(-0.3em);
-}
-.ut-step-status { min-width: 2.6em; text-align: right; white-space: nowrap; }
-.ut-step[data-state='wait'] { color: #7c7c7c; }
-.ut-step[data-state='ok'] .ut-step-status { color: var(--ut-orange); text-shadow: 0 0 8px rgba(255, 122, 0, 0.7); }
-.ut-step[data-state='warn'] .ut-step-status { color: #ffc46b; }
-.ut-step[data-state='fail'] .ut-step-status { color: #ff5a4a; }
-.ut-step[data-state='na'] .ut-step-status { color: #8a8a8a; }
-.ut-step-running { color: var(--ut-amber); animation: utBlink 0.9s steps(2) infinite; }
-@keyframes utBlink { 50% { opacity: 0.25; } }
-
-/* -- narrow and portrait windows: checklist moves under the core ---------- */
+/* -- narrow and portrait windows ----------------------------------------- */
 
 @media (max-width: 900px), (max-aspect-ratio: 1 / 1) {
-  .ut-boot { --ut-core: min(60vmin, 440px); --ut-cy: 44%; }
-  .ut-header { top: 3vh; }
-  .ut-steps {
-    left: 50%;
-    top: auto;
-    bottom: 3vh;
-    width: min(92vw, 440px);
-    transform: translateX(-50%);
-    font-size: clamp(10px, 2.6vw, 13px);
-    /* Here the list sits over the field of lights; a dark plate keeps it legible. */
-    padding: 0.6em 0.9em;
-    border-radius: 4px;
-    background: rgba(0, 0, 0, 0.72);
-    box-shadow: 0 0 24px 12px rgba(0, 0, 0, 0.72);
-  }
-  .ut-step { line-height: 2; }
+  .ut-boot { --ut-core: min(76vmin, 480px); --ut-cy: 46%; }
+  .ut-boot[data-exiting] { --ut-core: min(84vmin, 520px); --ut-cy: 48%; }
   .ut-floor { height: 30%; }
 }
 
@@ -2027,7 +1745,6 @@ kbd {
   .ut-boot *::after {
     animation: none !important;
   }
-  .ut-step { opacity: 1; }
 }
 
 @media (max-width: 900px) {

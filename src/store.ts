@@ -241,6 +241,14 @@ type State = {
   turns: Turn[]
   activeTool: string | null
   error: string | null
+  /**
+   * What kind of trouble `error` is. 'fault' — something of JARVIS's own is
+   * not working (the microphone, a failed start): the core shows it.
+   * 'service' — a cause outside him that passes (the usage limit, the
+   * network, the bridge reconnecting): the message is shown, the core carries
+   * on in its phase, and nothing else stops.
+   */
+  errorKind: 'fault' | 'service'
   connected: string[]
   /** Name of the speech-synthesis voice in use, shown in the HUD. */
   voice: string
@@ -254,6 +262,9 @@ type State = {
   bootNote: string
   /** The boot screen's checklist — see BootStepState. */
   bootSteps: Record<BootStepId, BootStep>
+  /** Which act of the start-up scene is showing: the splash, or the greeting
+   *  screen it hands over to — see lib/bootTimeline.ts. */
+  bootAct: 'splash' | 'greet'
   /** Cards currently on the display, newest last. */
   panels: Panel[]
   /** Blades currently open, newest last — which is also front-most. */
@@ -271,6 +282,7 @@ type State = {
   setBootNote: (n: string) => void
   setBootStep: (id: BootStepId, state: BootStepState, note?: string) => void
   resetBootSteps: () => void
+  setBootAct: (act: 'splash' | 'greet') => void
   pushPanel: (p: Panel) => void
   clearPanels: () => void
   pushBlade: (b: Blade) => void
@@ -282,7 +294,7 @@ type State = {
   setLevel: (l: number) => void
   setCaption: (c: string) => void
   setActiveTool: (t: string | null) => void
-  setError: (e: string | null) => void
+  setError: (e: string | null, kind?: 'fault' | 'service') => void
   setConnected: (c: string[]) => void
   pushTurn: (t: Turn) => void
   appendToLastTurn: (text: string) => void
@@ -303,6 +315,7 @@ export const useStore = create<State>((set) => ({
   turns: [],
   activeTool: null,
   error: null,
+  errorKind: 'fault',
   connected: [],
   voice: '',
   gestures: false,
@@ -313,6 +326,7 @@ export const useStore = create<State>((set) => ({
   expandedBlade: null,
   bootNote: '',
   bootSteps: initialBootSteps(),
+  bootAct: 'splash',
   ui: defaultUi(),
 
   setVoice: (voice) => set({ voice }),
@@ -322,6 +336,7 @@ export const useStore = create<State>((set) => ({
   setBootStep: (id, state, note) =>
     set((s) => ({ bootSteps: { ...s.bootSteps, [id]: { state, note } } })),
   resetBootSteps: () => set({ bootSteps: initialBootSteps() }),
+  setBootAct: (bootAct) => set({ bootAct }),
   // Three is as many as fits around the reactor without crowding it. Sticky
   // panels are exempt from the cull — the tool description promises they stay
   // until replaced, and a plain slice(-3) silently evicted them the moment a
@@ -380,7 +395,7 @@ export const useStore = create<State>((set) => ({
   setLevel: (level) => set({ level }),
   setCaption: (caption) => set({ caption }),
   setActiveTool: (activeTool) => set({ activeTool }),
-  setError: (error) => set({ error }),
+  setError: (error, kind = 'fault') => set({ error, errorKind: kind }),
   setConnected: (connected) => set({ connected }),
   pushTurn: (turn) => set((s) => ({ turns: [...s.turns.slice(-40), turn] })),
   appendToLastTurn: (text) =>

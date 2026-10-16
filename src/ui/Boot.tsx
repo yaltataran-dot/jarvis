@@ -1,67 +1,95 @@
-import { memo, useEffect, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
-import { useStore, type BootStep, type BootStepId } from '../store'
+import { memo, useRef, type CSSProperties, type RefObject } from 'react'
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
+import { useStore } from '../store'
+import { ENERGY, EXIT, HANDOVER_MS } from '../lib/bootTimeline'
+import { EnergyField } from './EnergyField'
 
 /**
- * The start-up screen, in the ЮГ-ТРАНСФЕР livery.
+ * The start-up scene, in the ЮГ-ТРАНСФЕР livery: the splash, the greeting
+ * screen and the way into the working screen as one scene (see
+ * lib/bootTimeline.ts, which also sets every duration used here), so the
+ * ring, the sparks and the floor are the same elements from the first frame
+ * to the last — nothing is swapped out between them, so nothing can jump.
  *
- * One full-frame overlay for the boot phase: the name in an angular frame with
- * a segmented bar beneath it, a ring core around the company logo, the start-up
- * checklist on the left and a field of lights receding below. Everything moving
- * is CSS on transform and opacity (the stroke-dash pulses aside), so it runs on
- * the compositor rather than in JavaScript; the only clock is the bar's, a few
- * ticks a second.
+ * Only the ring, the logo inside it, the streams of energy, the sparks, the
+ * glow and the floor — no words anywhere. Everything is there, alive, from
+ * the very first frame: the ring lit and turning, the streams moving, sparks
+ * already in the air. The start gate (Ignition.tsx) is only the invisible
+ * button over it. The click brightens the ring a little and starts drawing
+ * the streams in; the handover to the greeting screen softens the glow and
+ * calms the streams while he greets. The acts are flags on the root element
+ * (data-engaged, data-greet, data-exiting) and the stylesheet does the rest;
+ * the sparks and the streams are one canvas (EnergyField).
  *
- * The checklist and the bar report what App.tsx's ignite has actually done —
- * see BootStepState in the store. Nothing is marked OK that was not checked,
- * and the bar never runs ahead of the checklist.
+ * The start-up checks still run and are still recorded (bootSteps in the
+ * store) — they are just not drawn here.
  *
- * The exit is AnimatePresence's: the overlay stays mounted while it fades out,
- * so the hand-off to the assistant is a dissolve, not a cut.
+ * The exit is AnimatePresence's: the overlay stays mounted while the rings
+ * open out to the size of the assistant's own ring and dissolve into it, and
+ * the logo settles into the core's own logo, same place, same size — then the
+ * layer fades off the working screen, prepared underneath all along. Its
+ * instruments come up after (Hud.tsx), so nothing of it shows through before.
  */
-
-/** How long ignite holds the boot phase open. Keep in step with App.tsx. */
-const BOOT_MS = 9200
-
-const STEPS: Array<[BootStepId, string]> = [
-  ['modules', 'ЗАГРУЗКА МОДУЛЕЙ'],
-  ['system', 'ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ'],
-  ['voice', 'ПОДКЛЮЧЕНИЕ ГОЛОСОВОГО МОДУЛЯ'],
-  ['mic', 'ПРОВЕРКА МИКРОФОНА'],
-  ['database', 'ЗАГРУЗКА БАЗЫ ДАННЫХ'],
-  ['services', 'ПОДКЛЮЧЕНИЕ К СЕРВИСАМ'],
-  ['launch', 'ЗАПУСК ЮГ-ТРАНСФЕР'],
-]
-
-const SEGMENTS = 24
 
 export function Boot() {
   const phase = useStore((s) => s.phase)
   return (
     <AnimatePresence>
-      {phase === 'boot' && (
+      {(phase === 'offline' || phase === 'boot') && (
         <motion.div
           key="ut-boot"
-          className="ut-boot"
+          className="ut-boot-layer"
           initial={{ opacity: 1 }}
-          exit={{ opacity: 0, scale: 1.04, filter: 'blur(8px)' }}
-          transition={{ duration: 0.9, ease: 'easeInOut' }}
+          // The rings' own exit plays inside (BootScene) while this waits; the
+          // layer then fades off the working screen.
+          exit={{
+            opacity: 0,
+            transition: { duration: EXIT.FADE_MS / 1000, delay: EXIT.DELAY_MS / 1000, ease: 'easeInOut' },
+          }}
         >
-          <Backdrop />
-          <Header />
-          <Core />
-          <Checklist />
+          <BootScene />
         </motion.div>
       )}
     </AnimatePresence>
   )
 }
 
+/** The timeline's numbers, handed to the stylesheet. */
+const SCENE_VARS = {
+  '--ut-handover': `${HANDOVER_MS}ms`,
+  '--ut-exit-rings': `${EXIT.RINGS_MS}ms`,
+  '--ut-exit-logo': `${EXIT.LOGO_MS}ms`,
+  '--ut-engage-brightness': String(ENERGY.engageBrightness),
+  '--ut-greet-brightness': String(ENERGY.greetBrightness),
+} as CSSProperties
+
+function BootScene() {
+  // Started: the click (or clap) has landed and the start-up is running.
+  const engaged = useStore((s) => s.phase !== 'offline')
+  const greet = useStore((s) => s.bootAct === 'greet')
+  // False from the moment the boot phase ends: the exit.
+  const exiting = !useIsPresent()
+  const core = useRef<HTMLDivElement>(null)
+  const on = (b: boolean) => (b ? '' : undefined)
+  return (
+    <div
+      className="ut-boot"
+      style={SCENE_VARS}
+      data-engaged={on(engaged)}
+      data-greet={on(greet)}
+      data-exiting={on(exiting)}
+    >
+      <Backdrop />
+      <EnergyField engaged={engaged} greet={greet} exiting={exiting} coreRef={core} />
+      <Core coreRef={core} />
+    </div>
+  )
+}
+
 /* ---------------------------------------------------------------- backdrop */
 
 /** Depth: a vignette, a floor of lights moving towards the viewer, and the
- *  lit platform the core stands on. Static markup — memoised so the bar's
- *  clock never re-renders it. */
+ *  lit platform the core stands on. Static markup — memoised. */
 const Backdrop = memo(function Backdrop() {
   return (
     <>
@@ -75,96 +103,10 @@ const Backdrop = memo(function Backdrop() {
   )
 })
 
-/* ------------------------------------------------------------------ header */
-
-/** The frame's outline, shared by the stroke and the glints that run along it. */
-const FRAME =
-  'M48,44 L318,44 L352,12 L848,12 L882,44 L1152,44 L1188,80 L1152,116 L48,116 L12,80 Z'
-
-function Header() {
-  return (
-    <div className="ut-header">
-      <svg className="ut-frame" viewBox="0 0 1200 128" preserveAspectRatio="none" aria-hidden>
-        <defs>
-          <linearGradient id="utFrameStroke" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0" stopColor="#ff7a00" stopOpacity="0.15" />
-            <stop offset="0.18" stopColor="#ff8a1c" />
-            <stop offset="0.5" stopColor="#ffd6a3" />
-            <stop offset="0.82" stopColor="#ff8a1c" />
-            <stop offset="1" stopColor="#ff7a00" stopOpacity="0.15" />
-          </linearGradient>
-          <linearGradient id="utFrameFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0" stopColor="#1a1008" stopOpacity="0.9" />
-            <stop offset="1" stopColor="#050505" stopOpacity="0.95" />
-          </linearGradient>
-        </defs>
-        <path d={FRAME} fill="url(#utFrameFill)" />
-        <path d={FRAME} className="ut-frame-line" stroke="url(#utFrameStroke)" />
-        {/* Inner bevel of the name plate. */}
-        <path d="M362,24 L838,24 L862,46 L338,46 Z" className="ut-frame-inner" />
-        {/* Technical accents at the wing tips. */}
-        <path d="M70,30 L250,30 M950,30 L1130,30" className="ut-frame-tick" />
-        <path d="M1110,92 l8,-12 h7 l-8,12 z M1124,92 l8,-12 h7 l-8,12 z M1138,92 l8,-12 h7 l-8,12 z" className="ut-frame-slash" />
-        <path d="M60,92 h70" className="ut-frame-graphite" />
-        {/* Glints travelling round the contour. */}
-        <path d={FRAME} pathLength={1000} className="ut-glint" />
-        <path d={FRAME} pathLength={1000} className="ut-glint ut-glint-2" />
-      </svg>
-      <h1 className="ut-title">
-        <span className="ut-title-ug">ЮГ</span>
-        <span className="ut-title-tr">ТРАНСФЕР</span>
-      </h1>
-      <ProgressBar />
-    </div>
-  )
-}
-
-/** Steps that have finished, one way or another — anything but waiting or running. */
-const settled = (s: BootStep) => s.state !== 'wait' && s.state !== 'run'
-
-/**
- * The segmented bar. Paced by the boot sequence, but capped by the checklist:
- * it can show no more progress than steps actually settled, and only reaches
- * the end once the launch step itself has.
- */
-function ProgressBar() {
-  const steps = useStore((s) => s.bootSteps)
-  const [elapsed, setElapsed] = useState(0)
-
-  // Wall-clock, not requestAnimationFrame: rAF stalls in a background tab and
-  // froze the old boot on its first beat. Four ticks a second is plenty for a
-  // bar of two dozen cells.
-  useEffect(() => {
-    const start = Date.now()
-    const id = setInterval(() => setElapsed(Date.now() - start), 250)
-    return () => clearInterval(id)
-  }, [])
-
-  const all = STEPS.map(([id]) => steps[id])
-  const done = steps.launch.state === 'ok'
-  const real = all.filter(settled).length / all.length
-  const progress = done ? 1 : Math.min(elapsed / BOOT_MS, real)
-  const lit = Math.round(progress * SEGMENTS)
-
-  return (
-    <div className="ut-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
-      {Array.from({ length: SEGMENTS }, (_, i) => (
-        <span
-          key={i}
-          className="ut-bar-cell"
-          data-on={i < lit ? '1' : '0'}
-          data-next={!done && i === lit ? '1' : '0'}
-        />
-      ))}
-      <span className="ut-bar-sheen" aria-hidden />
-    </div>
-  )
-}
-
 /* -------------------------------------------------------------------- core */
 
 /** The ring core and the logo. Static markup, all motion in CSS — memoised. */
-const Core = memo(function Core() {
+const Core = memo(function Core({ coreRef }: { coreRef: RefObject<HTMLDivElement | null> }) {
   // Ticks round the outside, drawn once.
   const ticks = Array.from({ length: 72 }, (_, i) => {
     const a = (i / 72) * Math.PI * 2
@@ -181,7 +123,15 @@ const Core = memo(function Core() {
   })
 
   return (
-    <div className="ut-core">
+    <div className="ut-core" ref={coreRef}>
+      {/* The steady glow round the ring — one level per act, eased between,
+          never pulsing. */}
+      <div className="ut-core-flare" aria-hidden />
+      {/* The room's loudness before the start — a clap visibly lands before
+          the system answers it. --level is written by Ignition.tsx. */}
+      <div className="ut-clap" aria-hidden />
+      {/* A slow turn of the whole ring on top of each ring's own. */}
+      <div className="ut-rings-wake">
       <svg className="ut-rings" viewBox="-230 -230 460 460" aria-hidden>
         <defs>
           <radialGradient id="utDisc" r="0.5">
@@ -189,10 +139,6 @@ const Core = memo(function Core() {
             <stop offset="0.82" stopColor="#060504" />
             <stop offset="1" stopColor="#2a1404" />
           </radialGradient>
-          <linearGradient id="utComet" x1="0" x2="1">
-            <stop offset="0" stopColor="#ff7a00" stopOpacity="0" />
-            <stop offset="1" stopColor="#ffe2b8" />
-          </linearGradient>
         </defs>
 
         <g className="ut-ticks">{ticks}</g>
@@ -215,60 +161,21 @@ const Core = memo(function Core() {
         <circle r="156" className="ut-ring ut-segments" />
         <circle r="156" className="ut-ring ut-segments-lit ut-spin-fast" />
 
-        {/* Orange rings carrying the pulses. */}
+        {/* Orange rings carrying the slow lights. */}
         <circle r="143" className="ut-ring ut-thin" />
         <circle r="143" className="ut-comet" />
         <circle r="133" className="ut-ring ut-thin ut-thin-dashed" />
         <circle r="133" className="ut-comet ut-comet-rev" />
 
         <circle r="126" fill="url(#utDisc)" className="ut-disc" />
-        {/* A ring of light expanding out of the disc every few seconds. */}
-        <circle r="126" className="ut-shock" />
       </svg>
+      </div>
 
       <div className="ut-logo-glow" aria-hidden />
-      {/* The company's own logo, unaltered. The file carries transparent space
-          above the mark; the shift centres the visible mark in the ring. */}
+      {/* The company's own logo, unaltered — the only one on this screen. The
+          file carries transparent space above the mark; the shift centres the
+          visible mark in the ring. */}
       <img className="ut-logo" src="/ug-transfer-logo.png" alt="Юг-Трансфер" draggable={false} />
     </div>
   )
 })
-
-/* --------------------------------------------------------------- checklist */
-
-const STATUS_TEXT: Record<BootStep['state'], string> = {
-  wait: '',
-  run: '',
-  ok: 'OK',
-  warn: '',
-  fail: 'ОШИБКА',
-  // Nothing to check in this application — said plainly, never as OK.
-  na: '—',
-}
-
-function Checklist() {
-  const steps = useStore((s) => s.bootSteps)
-  return (
-    <ul className="ut-steps">
-      {STEPS.map(([id, label], i) => {
-        const st = steps[id]
-        const text = st.note ?? STATUS_TEXT[st.state]
-        return (
-          <li
-            key={id}
-            className="ut-step"
-            data-state={st.state}
-            style={{ animationDelay: `${0.35 + i * 0.12}s` }}
-          >
-            <span className="ut-step-caret">&gt;</span>
-            <span className="ut-step-label">{label}</span>
-            <span className="ut-step-leader" />
-            <span className="ut-step-status">
-              {st.state === 'run' ? <span className="ut-step-running">···</span> : text}
-            </span>
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
