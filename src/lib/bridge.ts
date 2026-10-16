@@ -70,6 +70,29 @@ type Frame = {
   servers?: Array<string | { name?: string }>
   attempt?: number
   status?: number | null
+  level?: string
+  /** On an error: 'rate' for the usage limit, 'service' for another cause
+   *  outside JARVIS (network, VPN, the service); absent for a fault. */
+  kind?: string
+  /** On a usage-limit error: when it lifts, as wall-clock "22:50". */
+  resetAt?: string | null
+}
+
+/**
+ * A turn that failed for a reason outside JARVIS — the usage limit, the
+ * network, the service — rather than a fault of his own. The page shows the
+ * message but does not put the core into its error state for it.
+ */
+export class ServiceError extends Error {
+  readonly kind: 'rate' | 'service'
+  readonly resetAt: string | null
+
+  constructor(message: string, kind: 'rate' | 'service', resetAt: string | null = null) {
+    super(message)
+    this.name = 'ServiceError'
+    this.kind = kind
+    this.resetAt = resetAt
+  }
 }
 
 /** Every question gets an id so its answer can be told from anyone else's. */
@@ -487,12 +510,22 @@ export async function ask(
             handlers.onTool(prettyToolName(msg.name))
             break
 
+          // How the bridge sorted the question — the page decides from it
+          // whether a long wait deserves a word first.
+          case 'effort':
+            if (msg.level) handlers.onEffort?.(msg.level)
+            break
+
           case 'done':
             finish(msg.text ?? '')
             break
 
           case 'error':
-            fail(new Error(msg.message ?? SAY.reported))
+            fail(
+              msg.kind === 'rate' || msg.kind === 'service'
+                ? new ServiceError(msg.message ?? SAY.reported, msg.kind, msg.resetAt ?? null)
+                : new Error(msg.message ?? SAY.reported),
+            )
             break
 
           // Claude Code retrying a failed API call: nothing to show, but proof

@@ -29,11 +29,13 @@ import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
 import { effortFor } from './effort.mjs'
-import { describeFailure, turnFailed } from './failures.mjs'
+import { describeFailure, isRateLimit, rateLimitMessage, rateLimitReset, turnFailed } from './failures.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
 import { createYandexMusic, musicAction } from './yandexMusic.mjs'
 import { musicServer } from './music.mjs'
+import { calendarAction, createGoogleCalendar } from './googleCalendar.mjs'
+import { calendarServer } from './calendar.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 
@@ -198,6 +200,33 @@ const YM = createYandexMusic({ log: (line) => console.log(line) })
 // first "что играет".
 if (process.platform === 'win32') YM.warm()
 
+/**
+ * Google Calendar (googleCalendar.mjs). Its writes have their own switch,
+ * JARVIS_CALENDAR_WRITES=1, so the calendar can be written to without opening
+ * the shell and the file system with JARVIS_ALLOW_WRITES — and every write
+ * still needs a spoken yes to its read-back in the page.
+ */
+const CAL = createGoogleCalendar({ log: (line) => console.log(line) })
+
+/**
+ * The usage limit, once it is known to be reached.
+ *
+ * Measured: with the session limit hit, every question still went to the
+ * model and came back as a 429 a second later — each one another request
+ * against a limit already spent. So when a turn fails with the limit, the
+ * model is left alone until the time Claude Code gave for it to lift (or a
+ * minute, when it gave none), and questions in the meantime are answered at
+ * once with the same plain sentence. Everything that needs no model — the
+ * page's own answers, music, the calendar — goes on working. The first
+ * question after the time passes goes to the model as normal. Bridge-wide,
+ * because the limit belongs to the account, not to one page.
+ */
+const LIMIT_PAUSE_FALLBACK_MS = 60_000
+/** Never trust a parsed time to hold the model off for longer than this. */
+const LIMIT_PAUSE_MAX_MS = 6 * 60 * 60_000
+const modelPause = { until: 0, clock: null }
+const modelPaused = () => Date.now() < modelPause.until
+
 const PC_ROOTS = [
   PROJECT_ROOT,
   ...(process.env.JARVIS_PC_ROOTS ?? '').split(';').map((s) => s.trim()).filter(Boolean),
@@ -351,6 +380,9 @@ function decideTool(name) {
     // disk or the network. `music_control`'s "play" would trip the verb rules.
     if (server === 'jarvis_music') return true
 
+    // The calendar, for the model: reading only — the server has no write tool.
+    if (server === 'jarvis_calendar') return true
+
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
       return ALLOW_WRITES
@@ -485,6 +517,10 @@ The blades — the ONLY surface:
   refuse to be embedded. Choose the live page when the layout carries the
   meaning — a dashboard, a chart, a profile, a table.
 - Never read a blade aloud. Say what it means and let them look.
+- Speak first, show second. When a reply also puts something on a blade, write
+  the spoken answer before the \`display\` or \`blade\` call, never after it:
+  composing a panel takes seconds, and they wait in silence for every one of
+  them. A spoken answer they did not ask to see needs no blade at all.
 
 The interface itself:
 - The interface is yours as well. \`ui_theme\` retints it, \`ui_reactor\` reshapes
@@ -578,6 +614,14 @@ Music — the \`music_*\` tools drive their Yandex Music app:
 - Say only what the tool reports. If it says the player did not change, say
   the music did not start; never claim it did.
 - Answer in one short sentence: the music is the point, not you.
+
+Their calendar — \`calendar_events\` reads their Google Calendar:
+- Use it for "что у меня в четверг?" when the phrasing is unusual; plain
+  questions are answered by the interface itself.
+- You cannot create, move or delete events. Asked to, tell them in one
+  sentence to say it directly — "Запиши встречу завтра в 15:00" — and that it
+  will be read back for a yes.
+- Times are in the calendar's own time zone; say them as wall-clock times.
 
 SPEED. The user is waiting in silence while you work; every tool call is
 seconds of it.
@@ -1049,6 +1093,31 @@ const handleRequest = async (req, res) => {
   // Yandex Music, for the commands the page recognises itself ("пауза",
   // "следующий трек") — no model turn. Always answers 200 with a result
   // object; what happened is in its `code` (see yandexMusic.mjs).
+  // Google Calendar, for the page's calendar flow (src/lib/calendarFlow.ts):
+  // status, list, and the writes it sends only after a spoken yes. Always 200
+  // with a result object; what happened is in its `code`.
+  if (req.method === 'POST' && req.url === '/calendar') {
+    let body = ''
+    for await (const chunk of req) {
+      body += chunk
+      if (body.length > 8192) {
+        req.destroy()
+        res.writeHead(413, cors)
+        return res.end('body too large')
+      }
+    }
+    let cmd
+    try {
+      cmd = JSON.parse(body || '{}')
+    } catch {
+      res.writeHead(400, cors)
+      return res.end('bad json')
+    }
+    const result = await calendarAction(CAL, cmd)
+    res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+    return res.end(JSON.stringify(result))
+  }
+
   if (req.method === 'POST' && req.url === '/music') {
     let body = ''
     for await (const chunk of req) {
@@ -1330,6 +1399,12 @@ console.log(
     (ALLOW_WRITES ? '' : ' — set JARVIS_ALLOW_WRITES=1 to permit shell/file/device actions'),
 )
 console.log(`[jarvis] computer tools in: ${PC_ROOTS.join('; ')}`)
+void CAL.status().then((s) =>
+  console.log(
+    `[jarvis] google calendar ${s.connected ? `connected (${s.timeZone})` : 'not connected — npm run calendar:connect'}` +
+      `, writes ${s.writes ? 'enabled' : 'disabled — set JARVIS_CALENDAR_WRITES=1 to allow'}`,
+  ),
+)
 // Asynchronous, so it lands a beat after the rest of the banner. Worth printing
 // at all because an extension that is simply not running is indistinguishable
 // at the tool boundary from one that is broken, and this is the one place the
@@ -1422,9 +1497,17 @@ wss.on('connection', (socket) => {
         }))
       if (closed || text == null) return
       await tuneFor(text)
+      const note = await browserNote()
+      if (lat) {
+        lat.effort = sessionEffort
+        lat.sent = performance.now()
+      }
+      // Tells the page how this question was sorted, so it can say a word at
+      // once when a long wait is likely (App.tsx) instead of seconds later.
+      sendTurn({ type: 'effort', level: ROUTE_EFFORT ? effortFor(text) : sessionEffort })
       yield {
         type: 'user',
-        message: { role: 'user', content: text + (await browserNote()) },
+        message: { role: 'user', content: text + note },
         parent_tool_use_id: null,
       }
     }
@@ -1573,6 +1656,32 @@ wss.on('connection', (socket) => {
   let turnInterrupted = false
   const turnSeconds = () => (turnStartedAt ? ((Date.now() - turnStartedAt) / 1000).toFixed(1) : '?')
 
+  /**
+   * Where a turn's time went, on the monotonic clock: one `[latency]` line per
+   * turn. Stages only — never the question, the answer or any tool's input.
+   *
+   *   recv     the ask arrived on the socket
+   *   start    handed to the agent (after any interrupt settled)
+   *   sent     the effort set and the message yielded to the SDK
+   *   first    the model's first stream event (its response has begun)
+   *   text     the first word of the answer
+   *   tools    each tool call, from its block starting to its result
+   */
+  let lat = null
+  const latNew = (id) => ({ id, effort: null, recv: performance.now(), start: 0, sent: 0, first: 0, text: 0, tools: new Map(), toolMs: 0, toolCount: 0 })
+  const ms = (a, b) => (a && b ? `${Math.round(b - a)}` : '-')
+  const latReport = (outcome) => {
+    if (!lat) return
+    const end = performance.now()
+    console.log(
+      `[latency] ask=${String(lat.id).slice(0, 12)} ${outcome} effort=${lat.effort ?? '-'}` +
+        ` queue=${ms(lat.recv, lat.start)}ms prep=${ms(lat.start, lat.sent)}ms` +
+        ` model-first=${ms(lat.sent, lat.first)}ms first-text=${ms(lat.sent, lat.text)}ms` +
+        ` tools=${lat.toolCount}(${Math.round(lat.toolMs)}ms) total=${ms(lat.recv, end)}ms`,
+    )
+    lat = null
+  }
+
   const announceTool = (id, name) => {
     if (!name || (id && seenTools.has(id))) return
     if (id) seenTools.add(id)
@@ -1624,6 +1733,8 @@ wss.on('connection', (socket) => {
         jarvis_pc: pcServer({ roots: PC_ROOTS, log: (line) => console.log(line) }),
         // Yandex Music: play, pause, tracks, volume, search.
         jarvis_music: musicServer(YM),
+        // Google Calendar, read-only for the model.
+        jarvis_calendar: calendarServer(CAL),
       },
       disallowedTools: DISALLOWED_BUILTINS,
       // A plain system prompt, not the claude_code preset. The preset is
@@ -1696,6 +1807,17 @@ wss.on('connection', (socket) => {
     },
   })
 
+  // Bring the agent up now, while the page is still on its start-up screen,
+  // rather than on the first question. Measured on a fresh connection: the
+  // first question spent 1.1 s waiting for the session to start before it
+  // could even be handed over. The initialize handshake is what it waited for.
+  {
+    const t0 = performance.now()
+    void Promise.resolve(session.initializationResult?.())
+      .then(() => console.log(`[jarvis] agent session ready in ${Math.round(performance.now() - t0)} ms`))
+      .catch((err) => console.warn(`[jarvis] agent session warm-up failed: ${err?.message ?? err}`))
+  }
+
   // Pump the session's output stream to the browser for as long as it lives.
   ;(async () => {
     try {
@@ -1717,17 +1839,23 @@ wss.on('connection', (socket) => {
               void Promise.resolve(session.interrupt?.()).catch(() => {})
             }
             const ev = msg.event
+            if (lat && !lat.first) lat.first = performance.now()
             if (
               ev?.type === 'content_block_delta' &&
               ev.delta?.type === 'text_delta' &&
               ev.delta.text
             ) {
+              if (lat && !lat.text) lat.text = performance.now()
               sendTurn({ type: 'text', delta: ev.delta.text })
             }
             if (
               ev?.type === 'content_block_start' &&
               ev.content_block?.type === 'tool_use'
             ) {
+              if (lat && ev.content_block.id && !lat.tools.has(ev.content_block.id)) {
+                lat.tools.set(ev.content_block.id, performance.now())
+                lat.toolCount++
+              }
               announceTool(ev.content_block.id, ev.content_block.name)
             }
             break
@@ -1758,6 +1886,11 @@ wss.on('connection', (socket) => {
             if (!Array.isArray(blocks)) break
             for (const block of blocks) {
               if (block?.type === 'tool_result') {
+                const began = lat?.tools.get(block.tool_use_id)
+                if (began) {
+                  lat.toolMs += performance.now() - began
+                  lat.tools.delete(block.tool_use_id)
+                }
                 settleTool(block.tool_use_id, block.is_error === true)
               }
             }
@@ -1792,6 +1925,17 @@ wss.on('connection', (socket) => {
                   (turnTools.length ? ` · tools: ${turnTools.join(', ')}` : ''),
               )
               sendTurn({ type: 'error', message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default })
+            } else if (isRateLimit(msg, turnApiError)) {
+              // The limit: hold the model off until it lifts — see modelPause.
+              const reset = rateLimitReset(msg)
+              const now = Date.now()
+              modelPause.until = reset ? Math.min(reset.until, now + LIMIT_PAUSE_MAX_MS) : now + LIMIT_PAUSE_FALLBACK_MS
+              modelPause.clock = reset?.clock ?? null
+              console.error(
+                `[jarvis] turn failed after ${turnSeconds()} s: usage limit (429)` +
+                  ` · model paused until ${new Date(modelPause.until).toLocaleTimeString()}`,
+              )
+              sendTurn({ type: 'error', kind: 'rate', resetAt: modelPause.clock, message: rateLimitMessage(modelPause.clock, LANG) })
             } else {
               const described = describeFailure(msg, turnApiError, LANG)
               console.error(
@@ -1808,12 +1952,18 @@ wss.on('connection', (socket) => {
               const generic = describeFailure({ subtype: 'unknown' }, null, LANG)
               sendTurn({
                 type: 'error',
+                // A known cause outside JARVIS — the network, the VPN, the
+                // service — rather than a fault of his own.
+                ...(described !== generic ? { kind: 'service' } : {}),
                 message:
                   described !== generic
                     ? described
                     : (RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default),
               })
             }
+            latReport(
+              !turnFailed(msg, turnApiError) ? 'ok' : turnInterrupted ? 'interrupted' : `failed:${msg.subtype}`,
+            )
             turnStartedAt = 0
             turnTools = []
             turnApiError = null
@@ -1923,7 +2073,17 @@ wss.on('connection', (socket) => {
        */
       const text = msg.text
       const id = typeof msg.id === 'string' ? msg.id : null
+      // The usage limit is reached and has not lifted yet: answer at once,
+      // without another request against it. Nothing is queued, so a newer
+      // question still supersedes this one as usual.
+      if (modelPaused()) {
+        console.log(`[jarvis] ask ${String(id).slice(0, 12)} not sent: usage limit until ${new Date(modelPause.until).toLocaleTimeString()}`)
+        console.log(`[latency] ask=${String(id).slice(0, 12)} limit-paused effort=- total=0ms`)
+        send({ type: 'error', kind: 'rate', resetAt: modelPause.clock, message: rateLimitMessage(modelPause.clock, LANG), ask: id })
+        return
+      }
       const mine = ++newestAsk
+      const received = latNew(id)
       delivery = delivery
         .then(() => settling)
         .then(turnIdle)
@@ -1932,9 +2092,14 @@ wss.on('connection', (socket) => {
           // for this one; running it would only pay for an unheard answer.
           if (mine !== newestAsk) {
             if (TRACE) console.log(`[jarvis] ask ${String(id).slice(0, 12)} superseded while waiting — not sent`)
+            console.log(
+              `[latency] ask=${String(id).slice(0, 12)} superseded effort=- queue=${ms(received.recv, performance.now())}ms total=${ms(received.recv, performance.now())}ms`,
+            )
             return
           }
           answering = id
+          lat = received
+          lat.start = performance.now()
           turnOpen = true
           turnStartedAt = Date.now()
           turnTools = []

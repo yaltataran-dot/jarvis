@@ -41,6 +41,47 @@ const EN = {
   default: 'The turn failed part way through.',
 }
 
+/** Is this failure the usage limit (HTTP 429), rather than any other fault? */
+export function isRateLimit(result, assistantError) {
+  const text = String(result?.result ?? '')
+  return result?.api_error_status === 429 || assistantError === 'rate_limit' || /API Error:\s*429/.test(text)
+}
+
+/**
+ * When the limit lifts, as Claude Code writes it into the result:
+ * "You've hit your session limit · resets 10:50pm (Europe/Moscow)".
+ *
+ * `clock` is the wall-clock time as written ("22:50"); `until` the next moment
+ * that time comes round on this machine's clock, which is the user's own.
+ * Null when the text gives no time — the caller then pauses briefly instead.
+ */
+export function rateLimitReset(result, now = new Date()) {
+  const m = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(String(result?.result ?? ''))
+  if (!m) return null
+  let h = Number(m[1])
+  const min = Number(m[2] ?? 0)
+  const ap = m[3]?.toLowerCase()
+  if (ap === 'pm' && h < 12) h += 12
+  if (ap === 'am' && h === 12) h = 0
+  if (h > 23 || min > 59) return null
+  const at = new Date(now)
+  at.setHours(h, min, 0, 0)
+  if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1)
+  return { until: at.getTime(), clock: `${h}:${String(min).padStart(2, '0')}` }
+}
+
+/** The limit's sentence, with the time it lifts when that is known. */
+export function rateLimitMessage(clock, lang = 'ru') {
+  if (lang === 'en') {
+    return clock
+      ? `The Claude usage limit is reached until ${clock}. Commands that need no model still work.`
+      : EN.rate
+  }
+  return clock
+    ? `Лимит запросов Claude исчерпан до ${clock}. Команды без модели работают.`
+    : RU.rate
+}
+
 /**
  * A short sentence for the screen. Reads, in order of how specific it is: the
  * HTTP status Claude Code recorded, the assistant message's error kind, a

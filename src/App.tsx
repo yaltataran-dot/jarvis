@@ -4,6 +4,7 @@ import { Hud } from './ui/Hud'
 import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
+import { VoiceWaves } from './ui/VoiceWaves'
 import { useStore } from './store'
 import {
   startVoice,
@@ -13,7 +14,7 @@ import {
   type Voice,
   type VoiceMode,
 } from './lib/voice'
-import { createSpeaker, cycleVoice, currentVoiceName } from './lib/tts'
+import { createSpeaker, cycleVoice, currentVoiceName, diag as ttsDiag } from './lib/tts'
 import { STOP_ONLY } from './lib/stopWords'
 import * as sfx from './lib/sfx'
 import * as music from './lib/music'
@@ -22,7 +23,8 @@ import { listenForClap } from './lib/clap'
 import * as camera from './lib/camera'
 import * as kokoro from './lib/kokoro'
 import { LANG, TTS_ENGINE } from './config'
-import { forTool, attention, STARTUP_GREETING } from './lib/fillers'
+import { forTool, attention, checking, considering, STARTUP_GREETING } from './lib/fillers'
+import { localAnswer, sayClock } from './lib/localAnswer'
 import {
   ask,
   warm,
@@ -35,14 +37,23 @@ import {
   watchConnection,
   connectedLabels,
   usingBridge,
+  isConnected,
   type Msg,
 } from './lib/brain'
 import { getMic, startAnalyser, micLevel } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
-import { trace } from './lib/bridge'
+import { ServiceError, trace } from './lib/bridge'
 import { env } from './config'
 import { musicReply, parseMusicCommand, parseYesNo, type MusicIntent, type MusicKind } from './lib/musicIntent'
 import { runMusic } from './lib/yandexMusic'
+import { createCalendarFlow, type CalendarFlow } from './lib/calendarFlow'
+import { bridgeCalendar } from './lib/calendarClient'
+import { createFloor, type Floor, type Turn } from './lib/floor'
+import { makeVoiceSlot, type VoiceSlot } from './lib/voiceSlot'
+import { routePhrase } from './lib/turnRoute'
+import { GREET_SCREEN_MS, HANDOVER_MS, SPLASH_AFTER_START_MS } from './lib/bootTimeline'
+
+type Speaker = ReturnType<typeof createSpeaker>
 
 /**
  * The conversation.
@@ -65,6 +76,32 @@ const AWAIT_SPEECH_MS = 14000
  *  drops back to standby. Long enough that you don't have to say the name
  *  again to continue a thought. */
 const FOLLOW_UP_MS = 11000
+
+/**
+ * How long a question the bridge sorted as slow — a lookup ('medium') or one
+ * to think through ('high') — may go without a word before a short fixed line
+ * is said. Measured on the bridge, an answer on 'low' starts in about 1.4–3 s;
+ * these start in 4–13 s. A quick medium answer still beats the line.
+ */
+/**
+ * The usage limit, as he says it. In full the first time — with the time it
+ * lifts, in words, when the bridge knows it — and briefly after that. Claude
+ * is written as it is said, for the synthesiser.
+ */
+function limitLine(resetAt: string | null, first: boolean): string {
+  if (LANG !== 'ru') {
+    if (!first) return 'The limit has not lifted yet.'
+    return resetAt ? `The Claude usage limit is reached. It lifts at ${resetAt}.` : 'The Claude usage limit is reached. Try again a little later.'
+  }
+  if (!first) return 'Лимит ещё не восстановился, сэр.'
+  const m = resetAt ? /^(\d{1,2}):(\d{2})$/.exec(resetAt) : null
+  return m
+    ? `Лимит запросов Клода исчерпан. Он восстановится в ${sayClock(Number(m[1]), Number(m[2]))}.`
+    : 'Лимит запросов Клода исчерпан. Попробуйте чуть позже.'
+}
+
+const EARLY_WORD_MS = 1200
+const EARLY_WORD_HIGH_MS = 700
 
 /** How long a music question ("Какую песню включить?", "Включить?") waits for its answer. */
 const MUSIC_ANSWER_MS = 30000
@@ -101,16 +138,29 @@ export default function App() {
   const store = useStore
   const phase = useStore((s) => s.phase)
   const history = useRef<Msg[]>([])
-  const speaker = useRef<ReturnType<typeof createSpeaker> | null>(null)
-  const voice = useRef<Voice | null>(null)
 
   /**
-   * Monotonic turn counter. Every await in a turn checks it on the way out:
-   * if it has moved, that turn was superseded by a barge-in and must not touch
-   * the phase, the speaker, or the busy state on its way to the floor.
+   * Who is speaking and which turn is in flight — see floor.ts. Every speaker
+   * is made through it and every turn begun through it, so a new turn ends
+   * the old one, voice and question both. Every await in a turn checks
+   * `stale()` on the way out: if it has moved, that turn was superseded and
+   * must not touch the phase or the busy state on its way to the floor.
    */
-  const turn = useRef(0)
+  const floorRef = useRef<Floor<Speaker> | null>(null)
+  if (!floorRef.current) floorRef.current = createFloor<Speaker>({ interrupt, trace })
+  const floor = floorRef.current
+
+  /** The one voice loop — see voiceSlot.ts. */
+  const voiceSlot = useRef<VoiceSlot<Voice> | null>(null)
+  const voice = () => voiceSlot.current?.current() ?? null
+  /** The newest utterance answered, so one delivered twice is answered once. */
+  const lastUtterance = useRef(0)
+  /** Which usage limit (by its reset time) has been announced in full. */
+  const limitSaid = useRef<string | null>(null)
+
   const booting = useRef(false)
+  /** False once the page has come down: nothing may reopen the microphone then. */
+  const mounted = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const voicePoll = useRef<ReturnType<typeof setInterval> | null>(null)
   /**
@@ -121,6 +171,12 @@ export default function App() {
   const musicAsked = useRef<{ q: MusicQuestion; until: number } | null>(null)
   /** When a music command last worked — while recent, "продолжи" means the music. */
   const musicAt = useRef(0)
+  /**
+   * The calendar conversation: its draft, its question, its yes. One for the
+   * life of the page, so a read-back and its answer are one operation.
+   */
+  const calendar = useRef<CalendarFlow | null>(null)
+  if (!calendar.current) calendar.current = createCalendarFlow({ api: bridgeCalendar })
 
   // -- helpers --------------------------------------------------------------
 
@@ -129,16 +185,15 @@ export default function App() {
     idleTimer.current = null
   }
 
-  const silence = () => {
-    speaker.current?.cancel()
-    speaker.current = null
-  }
-
-  const goDormant = () => {
+  const goDormant = (reason = 'dormant') => {
     trace('app:dormant')
     clearIdle()
-    silence()
-    turn.current++
+    // Standing down ends the turn in flight, its question to the brain
+    // included: an answer nobody will hear must not go on running tools.
+    floor.supersede(reason)
+    // Standing down drops any calendar draft: a yes to his name later must not
+    // write a meeting read back minutes ago.
+    calendar.current?.cancel()
     const s = store.getState()
     s.setCaption('')
     s.setActiveTool(null)
@@ -151,11 +206,13 @@ export default function App() {
   /** Open the mic and wait. `window` is how long before he gives up. */
   const listen = (window: number) => {
     clearIdle()
+    // A rearm that was waiting when the page came down: no new idle timer.
+    if (!mounted.current) return
     const s = store.getState()
     s.setCaption('')
     s.setPhase('listening')
     sfx.play('listen')
-    idleTimer.current = setTimeout(goDormant, window)
+    idleTimer.current = setTimeout(() => goDormant('idle'), window)
   }
 
   /**
@@ -165,7 +222,7 @@ export default function App() {
    * after the wait: something else may have taken the floor meanwhile.
    */
   const listenWhenReady = async (window: number, still: () => boolean) => {
-    const ok = (await voice.current?.rearm()) ?? false
+    const ok = (await voice()?.rearm()) ?? false
     if (!still()) return
     // A failed turn's own message matters more than this one.
     if (!ok && !store.getState().error) {
@@ -183,13 +240,18 @@ export default function App() {
 
   // -- one turn -------------------------------------------------------------
 
-  const respond = async (said: string): Promise<void> => {
-    const mine = ++turn.current
-    const stale = () => mine !== turn.current
-    trace('app:respond', { len: said.length })
+  const respond = async (said: string, source = 'utterance'): Promise<void> => {
+    // Ends the turn in flight, if any: its voice is cut and its question
+    // interrupted before this one says or asks anything.
+    const t = floor.begin(source)
+    const stale = t.stale
+    trace('app:respond', { len: said.length, turn: t.id })
 
     clearIdle()
     const s = store.getState()
+    // Trouble outside him that the last turn ran into (the usage limit, the
+    // network) is not this turn's: if it persists, this turn says so again.
+    if (s.error && s.errorKind === 'service') s.setError(null)
     // Last turn's panels and blades go now, before the new answer starts
     // putting its own up. Anything the model marked sticky survives.
     s.clearPanels()
@@ -198,24 +260,63 @@ export default function App() {
     s.pushTurn({ id: newId(), role: 'user', text: said })
     s.setPhase('thinking')
 
-    // A music command is an action with one meaning: done here, no model turn.
-    const command = musicCommand(said)
-    if (command) return musicTurn(command, stale)
+    // A calendar question waiting for its answer hears it first, then music
+    // commands, then calendar commands — no model turn for any of them. A stop
+    // none of them took is a stop, not a question — see routePhrase.
+    const route = await routePhrase(said, {
+      calendarWaiting: () => calendar.current?.waiting() ?? false,
+      calendar: (p) => calendarTurn(p, t),
+      music: musicCommand,
+      playMusic: (c) => musicTurn(c, t),
+      stale,
+      local: (p) =>
+        localAnswer(p, { now: new Date(), voice: store.getState().voice, connected: !usingBridge || isConnected() }),
+      sayLocal: (answer) => localTurn(answer, t),
+    })
+    if (route === 'stop') {
+      t.done('stop')
+      listen(FOLLOW_UP_MS)
+      return
+    }
+    if (route !== 'model') return
 
-    const spk = createSpeaker()
-    speaker.current = spk
+    const spk = t.speaker(() => createSpeaker())
     sfx.duck(true)
     music.duck(true)
 
     const turnId = newId()
     let started = false
     let filled = false
+    /**
+     * A word at once when a long wait is likely. The bridge says how it sorted
+     * the question before the model has begun; anything it did not put on
+     * 'low' — a lookup, something to think through — is measured in seconds
+     * to the first word (13.5 s for the weather, 12.5 s for a comparison), so
+     * a short canned line goes out if nothing has started shortly after. Never
+     * for a quick question, never twice, never over the answer, and no model
+     * turn for it: the lines are fixed (fillers.ts).
+     */
+    let early = 0
+    const stopEarly = () => window.clearTimeout(early)
 
     try {
-      const { text } = await ask(said, history.current, {
+      const { text } = await t.ask(() => ask(said, history.current, {
+        onEffort: (level) => {
+          if (level === 'low' || filled || started) return
+          stopEarly()
+          early = window.setTimeout(
+            () => {
+              if (stale() || filled || started) return
+              filled = true
+              spk.say(level === 'high' ? considering() : checking())
+            },
+            level === 'high' ? EARLY_WORD_HIGH_MS : EARLY_WORD_MS,
+          )
+        },
         onText: (delta) => {
           if (stale()) return
           if (!started) {
+            stopEarly()
             started = true
             store.getState().setPhase('speaking')
             // The answer arriving is what ends the tool phase — a timer would
@@ -241,11 +342,12 @@ export default function App() {
           // and silence that long reads as a crash. Once per turn only; a
           // chain of five tools shouldn't produce five apologies.
           if (!filled && !started) {
+            stopEarly()
             filled = true
             spk.say(forTool(name))
           }
         },
-      })
+      }))
 
       trace('app:answer', { len: text.length, stale: stale() })
       if (stale()) return
@@ -273,17 +375,33 @@ export default function App() {
 
       await spk.end()
       if (stale()) return
+      t.done('answered')
       sfx.play('done')
     } catch (err) {
       if (stale()) return
+      t.done('failed')
       console.error(err)
       sfx.play('error')
+      const service = err instanceof ServiceError
       store
         .getState()
-        .setError(err instanceof Error ? err.message : 'Something went wrong.')
+        .setError(err instanceof Error ? err.message : 'Something went wrong.', service ? 'service' : 'fault')
+      // The usage limit, said aloud — the user may not be looking at the
+      // screen. Once in full for each limit, then briefly: the bridge
+      // answers every question at once while it holds (see modelPause in
+      // server.mjs), so this is one line per question, never a repeat.
+      if (service && err.kind === 'rate') {
+        stopEarly()
+        const first = limitSaid.current !== (err.resetAt ?? 'unknown')
+        limitSaid.current = err.resetAt ?? 'unknown'
+        spk.say(limitLine(err.resetAt, first))
+        await spk.end()
+        if (stale()) return
+      }
     } finally {
+      stopEarly()
       if (!stale()) {
-        speaker.current = null
+        t.release(spk)
         sfx.duck(false)
         music.duck(false)
         store.getState().setActiveTool(null)
@@ -309,8 +427,8 @@ export default function App() {
     const q = asked.q
     const yesNo = parseYesNo(said)
     if (q.ask === 'confirm') return yesNo === 'yes' ? q.then : null
-    // A refusal is not a title.
-    if (yesNo === 'no') return null
+    // A refusal is not a title, and nor is a stop: "хватит" is not a song.
+    if (yesNo === 'no' || STOP_ONLY.test(said)) return null
     const answer = said.trim().replace(/[.!?]+$/, '')
     if (q.ask === 'which') {
       // "Второй" picks by position; anything else is the name itself.
@@ -327,7 +445,8 @@ export default function App() {
    * from the player's state as the bridge read it back, so "включаю" is only
    * said when the music did start.
    */
-  const musicTurn = async (intent: MusicIntent, stale: () => boolean): Promise<void> => {
+  const musicTurn = async (intent: MusicIntent, t: Turn<Speaker>): Promise<void> => {
+    const stale = t.stale
     const r = intent.action === 'clarify' ? { code: 'ok' as const } : await runMusic(intent)
     if (stale()) return
     trace('app:music', { action: intent.action, code: r.code })
@@ -347,20 +466,76 @@ export default function App() {
     const s = store.getState()
     s.pushTurn({ id: newId(), role: 'jarvis', text })
     s.setPhase('speaking')
-    const spk = createSpeaker()
-    speaker.current = spk
+    const spk = t.speaker(() => createSpeaker(), 'music')
     spk.say(text)
     await spk.end()
     if (stale()) return
-    speaker.current = null
+    t.release(spk)
+    t.done('music')
     // Music now coming out of the speakers would be heard as the next
     // question, so he stands by for his name — unless he has just asked one.
     // The recogniser is brought up clean at once either way (see rearm), so
     // "Джарвис, пауза" right after he speaks is not lost to a restart.
     if (r.playing && !asking) {
-      void voice.current?.rearm()
-      goDormant()
+      void voice()?.rearm()
+      goDormant('music playing')
     } else void listenWhenReady(FOLLOW_UP_MS, () => !stale())
+  }
+
+  // -- the page's own answers --------------------------------------------------
+
+  /**
+   * Say an answer the page had itself — the time, the date, his name, his
+   * voice (localAnswer.ts). No model turn, so nothing to interrupt; the
+   * floor still owns the voice, so a newer turn cuts it like any other.
+   */
+  const localTurn = async (answer: string, t: Turn<Speaker>): Promise<void> => {
+    const stale = t.stale
+    trace('app:local', { len: answer.length })
+    const s = store.getState()
+    s.pushTurn({ id: newId(), role: 'jarvis', text: answer })
+    s.setPhase('speaking')
+    const spk = t.speaker(() => createSpeaker(), 'local')
+    spk.say(answer)
+    await spk.end()
+    if (stale()) return
+    t.release(spk)
+    t.done('local')
+    void listenWhenReady(FOLLOW_UP_MS, () => !stale())
+  }
+
+  // -- calendar ----------------------------------------------------------------
+
+  /**
+   * Hand a phrase to the calendar flow. True if it was the calendar's — the
+   * reply has been spoken — false if the phrase is for someone else.
+   */
+  const calendarTurn = async (said: string, t: Turn<Speaker>): Promise<boolean> => {
+    const stale = t.stale
+    const reply = await calendar.current!.handle(said)
+    if (!reply) return false
+    // Superseded while the calendar answered. Whatever it did is done — a
+    // write is never repeated — but this turn says nothing more.
+    if (stale()) {
+      floor.log('calendar:stale-reply', { of: t.id })
+      return true
+    }
+    trace('app:calendar', { asks: reply.expectAnswer })
+    const s = store.getState()
+    s.pushTurn({ id: newId(), role: 'jarvis', text: reply.say })
+    s.setPhase('speaking')
+    const spk = t.speaker(() => createSpeaker(), 'calendar')
+    // push, not say: a list of meetings is several sentences.
+    spk.push(`${reply.say} `)
+    await spk.end()
+    // Cut off (someone spoke over it, a new turn began): not heard, so its
+    // confirmation word will not be taken — the flow says it again first.
+    if (stale()) return true
+    if (reply.readBack) calendar.current?.heard(reply.readBack)
+    t.release(spk)
+    t.done('calendar')
+    void listenWhenReady(FOLLOW_UP_MS, () => !stale())
+    return true
   }
 
   // -- voice events ---------------------------------------------------------
@@ -390,12 +565,12 @@ export default function App() {
     sfx.play('wake')
     // The start-up greeting can still be playing when he is first woken; cut
     // it off rather than answer over it in a second voice.
-    silence()
+    floor.silence('wake')
 
     // "Jarvis, what's happening in AI this week" in one breath. Waiting for a
     // greeting he didn't need is the most common way an assistant wastes time.
     if (trailing) {
-      void respond(trailing)
+      void respond(trailing, 'wake')
       return
     }
 
@@ -403,11 +578,11 @@ export default function App() {
 
     // Answer to his name. Deliberately NOT awaited any more: the microphone is
     // already open and the echo filter knows his voice, so the user can talk
-    // straight over the greeting instead of waiting it out.
-    const greeting = createSpeaker()
-    speaker.current = greeting
+    // straight over the greeting instead of waiting it out. Whatever the user
+    // then says begins a turn, and beginning a turn cuts this off.
+    const greeting = floor.claim(() => createSpeaker(), 'attention')
     greeting.say(attention())
-    void greeting.end()
+    void greeting.end().then(() => floor.release(greeting))
 
     listen(AWAIT_SPEECH_MS)
   }
@@ -425,23 +600,33 @@ export default function App() {
     const wasBusy =
       phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
 
-    silence()
     if (wasBusy) {
-      // Abandon the answer in flight. The turn counter moves in respond()'s
-      // replacement; bumping it here covers the case where nothing replaces it.
-      turn.current++
-      interrupt()
+      // Abandon the answer in flight: its voice cut, its question interrupted,
+      // its turn stale. respond() would do the same for the turn that replaces
+      // it; doing it here covers the case where nothing replaces it.
+      floor.supersede('barge-in')
       store.getState().setActiveTool(null)
       music.working(false)
       sfx.duck(false)
       music.duck(false)
+    } else {
+      // "Да, сэр?" still going as the user starts: they have the floor now.
+      floor.silence('speech-start')
     }
     store.getState().setPhase('listening')
   }
 
-  const onUtterance = (text: string) => {
+  const onUtterance = (text: string, id: number) => {
     const phase = store.getState().phase
-    trace('app:utterance', { phase, len: text.length })
+    trace('app:utterance', { phase, len: text.length, id })
+    // One utterance, one answer. A second delivery of the same one would begin
+    // a second turn — interrupting the first, possibly after a tool has run.
+    if (id <= lastUtterance.current) {
+      floor.log('utterance:duplicate', { id })
+      return
+    }
+    lastUtterance.current = id
+    floor.log('utterance', { id, len: text.length, phase })
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') {
       trace('app:ignored', { reason: phase })
       return
@@ -463,6 +648,16 @@ export default function App() {
     // Stay open for the next question; listen() also re-arms the idle timer
     // that the barge-in cleared.
     if (STOP_ONLY.test(said)) {
+      // The barge-in before this utterance did the cutting; this records what
+      // it found — sound coming out or not, sentences thrown away — next to
+      // the speak:cut and turn:superseded it produced.
+      floor.log('stop', { word: said.slice(0, 20), playing: ttsDiag.lastCut.playing, dropped: ttsDiag.lastCut.dropped })
+      // "Отмена" to a calendar read-back is its answer: let the flow refuse
+      // the draft and say so, rather than leaving it to a later "да".
+      if (calendar.current?.waiting()) {
+        void respond(said)
+        return
+      }
       trace('app:ignored', { reason: 'stop' })
       listen(FOLLOW_UP_MS)
       return
@@ -476,7 +671,32 @@ export default function App() {
   }
 
   const onVoiceError = (message: string) => {
+    floor.log('voice:error', { message: message.slice(0, 60) })
     store.getState().setError(message)
+  }
+
+  if (!voiceSlot.current) {
+    voiceSlot.current = makeVoiceSlot(
+      () => startVoice({ mode, onWake, onSpeechStart, onPartial, onUtterance, onError: onVoiceError }),
+      floor.log,
+    )
+  }
+
+  /** What to say when the microphone is not working, and what to do about it. */
+  const RETRY_MIC =
+    LANG === 'ru'
+      ? 'Микрофон не работает. Нажмите пробел, чтобы запустить его снова.'
+      : 'The microphone is not working. Press Space to start it again.'
+
+  /**
+   * Start the voice loop again after it could not start — permission refused,
+   * no microphone. The slot replaces the dead loop; it never adds a second.
+   */
+  const retryVoice = async () => {
+    store.getState().setError(null)
+    const v = await voiceSlot.current!.start()
+    if (!v.ok()) store.getState().setError(`${store.getState().error ?? ''} ${RETRY_MIC}`.trim())
+    else void listenWhenReady(AWAIT_SPEECH_MS, () => store.getState().phase === 'dormant')
   }
 
   // -- power on -------------------------------------------------------------
@@ -498,6 +718,7 @@ export default function App() {
       // put the button back so the user can simply press it again.
       booting.current = false
       console.error('[jarvis] power-up failed:', err)
+      store.getState().setBootAct('splash')
       store.getState().setPhase('offline')
       store
         .getState()
@@ -520,24 +741,21 @@ export default function App() {
    * the recording. Waking him cuts it off (see onWake).
    *
    * Resolves true only if the greeting was heard to the end. Anything that
-   * cuts it off — Escape, waking him — goes through silence(), which takes it
-   * off speaker.current first, so it is still ours here only if it finished.
+   * cuts it off — Escape, waking him — takes the floor from it first, so it
+   * still holds the floor here only if it finished.
    */
   const greetOnStartup = async (text: string): Promise<boolean> => {
     await probeCapabilities()
     // Something else already has the floor — never two voices at once.
-    if (speaker.current) return false
+    if (floor.current()) return false
     // The announce style: livelier piper settings and a presence chain — see
     // SpeechStyle in tts.ts.
-    const greeting = createSpeaker({ style: 'announce' })
-    speaker.current = greeting
+    const greeting = floor.claim(() => createSpeaker({ style: 'announce' }), 'startup-greeting')
     // push, not say: cut into sentences, the first is heard while the rest
     // are still being generated.
     greeting.push(`${text} `)
     await greeting.end()
-    if (speaker.current !== greeting) return false
-    speaker.current = null
-    return true
+    return floor.release(greeting)
   }
 
   const ignite = async () => {
@@ -546,6 +764,8 @@ export default function App() {
     // does the work, so it shows only what has actually been checked.
     const step = s.setBootStep
     s.resetBootSteps()
+    // The splash stays up for the start-up; the greeting screen comes later.
+    s.setBootAct('splash')
     // Running this at all means the application's modules have loaded.
     step('modules', 'ok')
     step('system', 'run')
@@ -558,8 +778,8 @@ export default function App() {
     // reason as the rest of the audio.
     music.enable()
     // The recorded intro is English; in Russian mode he greets in his own
-    // voice instead. See STARTUP_GREETING in fillers.ts.
-    const greeted = STARTUP_GREETING ? greetOnStartup(STARTUP_GREETING) : Promise.resolve(false)
+    // voice instead (see STARTUP_GREETING in fillers.ts) — on the greeting
+    // screen, further down, not over the splash.
     if (!STARTUP_GREETING) music.playBoot()
     music.startAmbient()
 
@@ -681,12 +901,13 @@ export default function App() {
     // to the socket — so a drop silently wipes his memory while the transcript
     // on screen still shows it. Better to say so than to let him quietly forget.
     watchConnection((state) => {
+      floor.log(`ws:${state}`, { asking: floor.asking() })
       if (state === 'lost') {
-        store.getState().setError('Bridge connection lost — reconnecting.')
+        store.getState().setError('Bridge connection lost — reconnecting.', 'service')
       } else if (state === 'reconnected') {
         store
           .getState()
-          .setError('Bridge reconnected. The previous conversation was not kept.')
+          .setError('Bridge reconnected. The previous conversation was not kept.', 'service')
       }
     })
     // Everything the boot itself sets up is registered by now.
@@ -729,11 +950,27 @@ export default function App() {
       }, 200)
     }
 
-    // Long enough for the start-up screen in Boot.tsx to play — the bar
-    // filling, the rings spinning up, the checklist resolving — before the
-    // live interface takes over. Kept a touch under the boot cue so the music
-    // is still rising as it hands over.
-    await new Promise((r) => setTimeout(r, 9200)) // boot sequence
+    // The start-up scene in Boot.tsx, act by act — see lib/bootTimeline.ts.
+    //
+    // The splash hands over to the greeting screen once the answer to the
+    // start has been seen for a moment and the bridge has said which voice it
+    // speaks with — the greeting needs that answer, and a slow bridge keeps
+    // the splash up rather than greeting in the wrong voice.
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    await Promise.all([sleep(SPLASH_AFTER_START_MS), probeCapabilities()])
+    store.getState().setBootAct('greet')
+    // He greets once the handover has played, never over it — and once only:
+    // this is the one place the start-up greeting is started.
+    const greeting = STARTUP_GREETING
+    const greeted = greeting
+      ? sleep(HANDOVER_MS).then(() =>
+          // Not if the start-up screen has been stood down meanwhile (Escape).
+          store.getState().phase === 'boot' ? greetOnStartup(greeting) : false,
+        )
+      : Promise.resolve(false)
+    // The greeting screen holds while he speaks and the checklist resolves,
+    // and the working screen comes once the start-up itself is done.
+    await sleep(GREET_SCREEN_MS)
     await warming
     store.getState().setConnected(connectedLabels())
     store.getState().setVoice(currentVoiceName())
@@ -762,15 +999,10 @@ export default function App() {
     if (voiceCaps.ttsEngine) step('voice', 'ok')
     else step('voice', 'warn', 'СИСТ. ГОЛОС')
 
-    // One voice loop, started once, running until the page closes.
-    voice.current = await startVoice({
-      mode,
-      onWake,
-      onSpeechStart,
-      onPartial,
-      onUtterance,
-      onError: onVoiceError,
-    })
+    // One voice loop, started once, running until the page closes. A loop
+    // that could not hear at all is said so, with the way to start it again.
+    const loop = await voiceSlot.current!.start()
+    if (!loop.ok()) store.getState().setError(`${store.getState().error ?? ''} ${RETRY_MIC}`.trim())
 
     // The voice loop is up: the start-up is done. Marked before the phase
     // changes, so the boot screen fades out showing it.
@@ -824,15 +1056,32 @@ export default function App() {
 
   useEffect(() => {
     let raf = 0
+    mounted.current = true
+
+    // The record of the conversation, in the console: every phase change with
+    // the turn it belongs to, next to the floor's own events.
+    const unsubscribe = useStore.subscribe((s, prev) => {
+      if (s.phase !== prev.phase) floor.log('phase', { from: prev.phase, to: s.phase })
+    })
+    ;(window as unknown as Record<string, unknown>).__floor = {
+      events: floor.events,
+      stats: floor.stats,
+      turn: floor.turn,
+      asking: floor.asking,
+      live: floor.live,
+    }
+
+    // Mounted again on a page that is already powered (a hot reload): the
+    // unmount stopped the voice loop, so bring the one loop back.
+    const powered = store.getState().phase
+    if (powered !== 'offline' && powered !== 'boot') void voiceSlot.current?.start()
 
     const pump = () => {
       const st = store.getState()
       // While speaking, follow JARVIS's own output rather than the mic, so the
       // orb lip-syncs instead of reacting to room noise.
-      const lvl =
-        st.phase === 'speaking' && speaker.current
-          ? speaker.current.level()
-          : micLevel()
+      const spk = floor.current()
+      const lvl = st.phase === 'speaking' && spk ? spk.level() : micLevel()
       st.setLevel(lvl)
       raf = requestAnimationFrame(pump)
     }
@@ -855,16 +1104,14 @@ export default function App() {
         e.preventDefault()
         const name = cycleVoice()
         store.getState().setVoice(name)
-        silence()
-        const demo = createSpeaker()
-        speaker.current = demo
+        const demo = floor.claim(() => createSpeaker(), 'voice-demo')
         const shown = name.replace(/\(.*?\)/g, '').trim()
         demo.say(
           LANG === 'ru'
             ? `Голос: ${shown}. К вашим услугам, сэр.`
             : `Voice set to ${shown}. At your service, sir.`,
         )
-        void demo.end()
+        void demo.end().then(() => floor.release(demo))
         return
       }
 
@@ -902,15 +1149,14 @@ export default function App() {
       // — and it prints the verdict rather than making you infer it.
       if (e.key === 't' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault()
-        silence()
-        const t = createSpeaker()
-        speaker.current = t
+        const t = floor.claim(() => createSpeaker(), 'audio-test')
         t.say(
           LANG === 'ru'
             ? 'Проверка звука. Если вы это слышите, синтез речи работает, сэр.'
             : 'Audio test. If you can hear this, speech output is working, sir.',
         )
         void t.end().then(() => {
+          floor.release(t)
           const d = (window as unknown as Record<string, Record<string, unknown>>).__tts
           console.info('[jarvis] audio test →', d)
           if (d && d.started === 0 && d.rescued === 0) {
@@ -926,7 +1172,7 @@ export default function App() {
       // no key for at all.
       if (e.key === 'Escape') {
         e.preventDefault()
-        if (store.getState().phase !== 'offline') goDormant()
+        if (store.getState().phase !== 'offline') goDormant('escape')
         return
       }
 
@@ -947,6 +1193,10 @@ export default function App() {
       ) {
         onSpeechStart()
         listen(AWAIT_SPEECH_MS)
+      } else if (voice() && !voice()!.ok()) {
+        // The microphone is down: Space starts it again rather than waking
+        // him to a loop that cannot hear the answer.
+        void retryVoice()
       } else {
         onWake('')
       }
@@ -954,12 +1204,16 @@ export default function App() {
     window.addEventListener('keydown', onKey)
 
     return () => {
+      mounted.current = false
+      unsubscribe()
       cancelAnimationFrame(raf)
       window.removeEventListener('keydown', onKey)
       clearIdle()
       if (voicePoll.current) clearInterval(voicePoll.current)
-      voice.current?.stop()
-      speaker.current?.cancel()
+      // The loop, the voice and any question in flight go with the page —
+      // a loop still starting is stopped the moment it arrives.
+      voiceSlot.current?.stop()
+      floor.supersede('unmount')
       // The camera must not outlive the page that turned it on.
       hands.disableHands()
     }
@@ -969,6 +1223,7 @@ export default function App() {
   return (
     <>
       <Scene />
+      <VoiceWaves />
       <Hud />
       <Boot />
       <Diagnostics />

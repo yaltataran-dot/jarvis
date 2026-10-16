@@ -19,6 +19,9 @@ export type AskHandlers = {
   onText: (delta: string) => void
   /** Fires when Claude starts running a remote tool. */
   onTool: (name: string) => void
+  /** How hard the question is being thought about ('low' | 'medium' | 'high'),
+   *  as the bridge sorted it, before any answer exists. Bridge only. */
+  onEffort?: (level: string) => void
 }
 
 /** The stream for the turn in flight, so a barge-in can abort it. Without this
