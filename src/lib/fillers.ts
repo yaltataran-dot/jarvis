@@ -50,6 +50,20 @@ const WORKING = tr(
   ],
 )
 
+/**
+ * Said at once for a question that will take a while, before any tool has
+ * fired — a lookup (CHECKING) or something to think through (CONSIDERING).
+ * Fixed lines: no model turn is spent on them. Same grammar as WORKING.
+ */
+const CHECKING = tr(
+  ['Checking.', 'One moment.', 'Looking into it.', 'Let me see.'],
+  ['Сейчас проверю.', 'Проверяю.', 'Уточняю.', 'Минуту.'],
+)
+const CONSIDERING = tr(
+  ['Considering.', 'One moment, sir.', 'Thinking it through.'],
+  ['Обдумываю.', 'Минуту, сэр.', 'Разбираюсь.'],
+)
+
 /** Acknowledging an order where no tool is involved. */
 const ACKNOWLEDGE = tr(
   [
@@ -111,6 +125,8 @@ function makePicker(pool: string[]) {
 export const working = makePicker(WORKING)
 export const acknowledge = makePicker(ACKNOWLEDGE)
 export const attention = makePicker(ATTENTION)
+export const checking = makePicker(CHECKING)
+export const considering = makePicker(CONSIDERING)
 
 /**
  * Naming the task is warmer than a generic acknowledgement and shows the
