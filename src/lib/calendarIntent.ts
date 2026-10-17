@@ -539,6 +539,16 @@ const isCalendarish = (t: Tok[]) => t.some((x) => eventNoun(x.n) || /^кален
 
 // ---------------------------------------------------------------------------
 
+/** A question word after "напомни (мне, пожалуйста)": "что", "о чём", "как", "кто"… */
+const RECALL_WORD = /^(?:что|чего|чем|как|какой|какая|какое|какие|какую|каким|кто|кого|кому|где|куда|откуда|когда|сколько|зачем|почему|чей|чья|чье|чьё)$/
+function recallQuestion(n: string[]): boolean {
+  let k = 1
+  while (k < n.length && /^(?:мне|нам|пожалуйста|еще|ещё|ка)$/.test(n[k])) k++
+  if (RECALL_WORD.test(n[k] ?? '')) return true
+  // "о чём", "про что", "об этом"
+  return /^(?:о|об|про)$/.test(n[k] ?? '') && /^(?:чем|чём|что|том|этом|нем|нём|ней|них)$/.test(n[k + 1] ?? '')
+}
+
 /** The calendar request in a phrase, or null if it is not one. */
 export function parseCalendarCommand(text: string, c: Ctx): CalendarIntent | null {
   let t = tokenize(text)
@@ -665,6 +675,12 @@ export function parseCalendarCommand(text: string, c: Ctx): CalendarIntent | nul
     const w = readWhen(t, 1, t.length, used, c)
     const hasWhen = !!(w.date || w.time || w.part || w.week || w.allDay)
     if (!reminder && !isCalendarish(t) && !hasWhen) return null
+    // "Напомни, что мы решили", "напомни, о чём мы говорили", "напомни, как его
+    // зовут" — asking to be reminded of something, now, not for a reminder in
+    // the calendar. With no time in it, a question word straight after the verb
+    // makes it a question, and it goes to the model. "Напомни завтра, что…"
+    // has a time and is still a reminder.
+    if (reminder && !hasWhen && recallQuestion(n)) return null
     // A note, a list, a file, an alarm, a song — "запиши в заметки", "поставь
     // будильник на 7" — is not a meeting.
     if (noun < 0 && n.some((w2) => /^(?:заметк|список|списк|файл|блокнот|документ|таблиц|будильник|таймер|песн|трек|музык|альбом|плейлист)/.test(w2))) return null

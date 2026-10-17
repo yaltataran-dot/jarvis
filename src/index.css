@@ -2620,3 +2620,30 @@ kbd {
   transform: scaleX(-1);
   background: #000;
 }
+
+/* Recovery screens — ui/ErrorBoundary.tsx. Self-contained colours so they read
+   even if a variable above failed to resolve. */
+.fault-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  overflow: auto;
+  padding: 8vh 6vw;
+  background: #050506;
+  color: #eceef1;
+  font-family: system-ui, sans-serif;
+}
+.fault-screen h1 { margin: 0 0 1rem; color: #ff7a00; font-size: 1.5rem; }
+.fault-screen .fault-msg { color: #ff4d3d; font-family: ui-monospace, monospace; word-break: break-word; }
+.fault-screen button,
+.fault-scene-note button {
+  margin: 0 0.75rem 0.75rem 0;
+  padding: 0.6rem 1.1rem;
+  border: 1px solid #ff7a00;
+  background: transparent;
+  color: #ff7a00;
+  cursor: pointer;
+}
+.fault-screen pre { white-space: pre-wrap; word-break: break-word; font-size: 0.75rem; opacity: 0.85; }
+.fault-scene { display: flex; align-items: flex-end; justify-content: center; background: radial-gradient(circle at center, #14100a 0%, #050506 70%); }
+.fault-scene-note { display: flex; flex-direction: column; gap: 0.4rem; align-items: center; padding: 1rem; color: #ff7a00; font-size: 0.8rem; pointer-events: auto; z-index: 2; }

@@ -1,6 +1,8 @@
 import type { AskHandlers } from './anthropic'
+import type { AsideItem } from './aside'
 import type { Blade, Panel } from '../store'
 import { BRIDGE_WS_URL, LANG } from '../config'
+import { makeTurnLog } from './turnLog'
 
 /** The page's own failure sentences, in the language he answers in. */
 const SAY =
@@ -43,11 +45,27 @@ const TRACE = import.meta.env.VITE_TRACE === '1'
  */
 export function trace(step: string, info: Record<string, string | number | boolean> = {}): void {
   if (!TRACE) return
-  console.info('[jarvis:trace]', step, info)
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: 'trace', step, info }))
-  }
+  turnLog.event(step, info)
 }
+
+const DIALOG_LOG = import.meta.env.VITE_DIALOG_LOG === '1'
+
+/**
+ * Stamps each step with its turn id and delay, and checks the stream for
+ * duplicates, hung asks and missed stops (turnLog.ts). Dialogue words are
+ * stripped unless VITE_DIALOG_LOG=1. Ready on `window.__turnlog`.
+ */
+const turnLog = makeTurnLog({
+  dialog: DIALOG_LOG,
+  out: (e) => {
+    const info = { tid: e.tid, dt: e.dt, ...e.info }
+    console.info('[jarvis:trace]', e.step, info)
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'trace', step: e.step, info, at: e.t }))
+    }
+  },
+})
+if (TRACE && typeof window !== 'undefined') (window as unknown as { __turnlog?: unknown }).__turnlog = turnLog
 
 /** Anything the bridge sends. Deliberately loose — a frame from a future
  *  bridge build should be ignored, not crash the turn. */
@@ -381,6 +399,10 @@ let pending: { finish: (fallback?: string) => void } | null = null
 export async function ask(
   prompt: string,
   handlers: AskHandlers,
+  /** What the page answered by itself (aside.ts) — sent apart from the
+   *  question, so the bridge sorts its effort by what was actually asked, and
+   *  with their ids, so the bridge can pass on only what its session lacks. */
+  asides: AsideItem[] = [],
 ): Promise<{ text: string; tools: string[] }> {
   /**
    * A new question supersedes the one in flight.
@@ -500,6 +522,7 @@ export async function ask(
       try {
         switch (msg.type) {
           case 'text':
+            if (!text) trace('ask:first-delta')
             text += msg.delta ?? ''
             handlers.onText(msg.delta ?? '')
             break
@@ -559,7 +582,7 @@ export async function ask(
 
     try {
       trace('ask:sent', { id })
-      ws.send(JSON.stringify({ type: 'ask', text: prompt, id }))
+      ws.send(JSON.stringify({ type: 'ask', text: prompt, id, ...(asides.length ? { asides } : {}) }))
     } catch (err) {
       // The socket can go into CLOSING between connect() resolving and here.
       fail(err instanceof Error ? err : new Error(String(err)))

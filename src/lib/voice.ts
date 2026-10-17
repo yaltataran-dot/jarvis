@@ -1,4 +1,4 @@
-import { BRIDGE_HTTP_URL, LANG } from '../config'
+import { BRIDGE_HTTP_URL, BRIDGE_WS_URL, LANG } from '../config'
 import { getMic } from './audio'
 import { lastSoundEnded, speakingNow, speakingSince, speechActive } from './tts'
 import { startVad, type Vad } from './vad'
@@ -6,6 +6,10 @@ import { caps } from './capabilities'
 import { trace } from './bridge'
 import { isEcho } from './echo'
 import { startBrowserVoice } from './browserVoice'
+import { connectDeepgram } from './deepgramVoice'
+import { startPcmCapture } from './pcmCapture'
+import { SCRIBE_START_MS, startScribeVoice, type ScribeHooks, type ScribeLink } from './scribeVoice'
+import { superviseVoice } from './voiceSupervisor'
 import {
   SELF_GUARD_MS,
   WAKE,
@@ -75,14 +79,88 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
     )
     return deadVoice()
   }
+  const speech = { speakingSince, speechActive, lastSoundEnded, speakingNow }
+  const browser = () =>
+    startBrowserVoice(h, {
+      Ctor: (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null,
+      lang: LANG,
+      speech,
+    })
+
+  // Realtime recognition (Deepgram through the bridge, or Scribe), with the
+  // browser's recogniser behind it. See voiceSupervisor.ts. Both feed the same
+  // engine, so stop, barge-in, assembly and duplicate guards are shared.
+  if (caps().sttRealtime) {
+    const deepgram = caps().sttEngine === 'deepgram'
+    const realtimeName = deepgram ? 'deepgram' : 'scribe'
+    diag.engine = realtimeName
+    return superviseVoice({
+      mode: h.mode,
+      realtimeName,
+      // Deepgram needs no credential on the page: the bridge holds the key.
+      getToken: deepgram ? async () => '' : fetchScribeToken,
+      startScribe: (token, onFail) =>
+        startScribeVoice(token, h, {
+          connect: deepgram ? connectDeepgramLink : connectScribe,
+          speech,
+          onFail,
+          startTimeoutMs: SCRIBE_START_MS,
+        }),
+      startBrowser: () => {
+        diag.engine = 'browser'
+        return browser()
+      },
+    })
+  }
+
   diag.engine = caps().stt ? 'elevenlabs' : 'browser'
-  return caps().stt
-    ? startElevenVoice(h)
-    : startBrowserVoice(h, {
-        Ctor: (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null,
-        lang: LANG,
-        speech: { speakingSince, speechActive, lastSoundEnded, speakingNow },
-      })
+  return caps().stt ? startElevenVoice(h) : browser()
+}
+
+/**
+ * A single-use Scribe token from the bridge, which holds the API key. The token
+ * is handed straight to the SDK: never logged, stored or put in diagnostics.
+ */
+async function fetchScribeToken(): Promise<string> {
+  const res = await fetch(`${BRIDGE_HTTP_URL}/scribe-token`, { signal: AbortSignal.timeout(6000) })
+  if (!res.ok) throw new Error(`token ${res.status}`)
+  const { token } = (await res.json()) as { token?: string }
+  if (!token) throw new Error('token missing')
+  return token
+}
+
+/** Deepgram through the bridge's /stt-stream, fed by the shared microphone. */
+const connectDeepgramLink = (_token: string, hooks: ScribeHooks): Promise<ScribeLink> =>
+  connectDeepgram(hooks, { url: `${BRIDGE_WS_URL}/stt-stream`, capture: startPcmCapture })
+
+/** Errors that leave the session usable: Scribe refused one commit, not the stream. */
+const SCRIBE_NON_FATAL = new Set(['commit_throttled', 'insufficient_audio_activity'])
+
+/**
+ * The SDK behind the ScribeHooks the engine speaks. Loaded on demand, so the
+ * bundle only carries it for someone who has a key. Audio goes from the
+ * microphone to ElevenLabs inside the SDK; nothing here records or keeps it.
+ */
+async function connectScribe(token: string, hooks: ScribeHooks): Promise<ScribeLink> {
+  const { Scribe, RealtimeEvents, CommitStrategy } = await import('@elevenlabs/client')
+  const c = Scribe.connect({
+    token,
+    modelId: 'scribe_v2_realtime',
+    languageCode: LANG,
+    commitStrategy: CommitStrategy.VAD,
+    // Close to the browser engine's 900 ms endpoint; the assembler decides the rest.
+    vadSilenceThresholdSecs: 0.7,
+    microphone: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  })
+  c.on(RealtimeEvents.SESSION_STARTED, () => hooks.onStarted())
+  c.on(RealtimeEvents.PARTIAL_TRANSCRIPT, (m) => hooks.onPartial(m.text ?? ''))
+  c.on(RealtimeEvents.COMMITTED_TRANSCRIPT, (m) => hooks.onCommitted(m.text ?? ''))
+  c.on(RealtimeEvents.ERROR, (m) => {
+    const kind = String((m as { message_type?: string })?.message_type ?? 'error')
+    if (!SCRIBE_NON_FATAL.has(kind)) hooks.onError(kind)
+  })
+  c.on(RealtimeEvents.CLOSE, () => hooks.onClose())
+  return { close: () => c.close() }
 }
 
 /** VAD + ElevenLabs Scribe. */

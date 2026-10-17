@@ -16,6 +16,7 @@
  */
 
 import { WebSocketServer } from 'ws'
+import { STT_PATH, cleanKey, createSttProxy } from './deepgramProxy.mjs'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
@@ -29,6 +30,9 @@ import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
 import { effortFor } from './effort.mjs'
+import { cleanInfo, createTurnLog } from './turnLog.mjs'
+import { asidesFrom, createAsideLedger, createBlockJoin, formatAsides, withAside } from './turnText.mjs'
+import { asksToSee } from './visual.mjs'
 import { describeFailure, isRateLimit, rateLimitMessage, rateLimitReset, turnFailed } from './failures.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
@@ -36,8 +40,13 @@ import { createYandexMusic, musicAction } from './yandexMusic.mjs'
 import { musicServer } from './music.mjs'
 import { calendarAction, createGoogleCalendar } from './googleCalendar.mjs'
 import { calendarServer } from './calendar.mjs'
+import { answerRequest, formatNotes, notesFor, startKnowledge } from './knowledgeRoute.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+// Loopback only by default. Bound to every interface, the agent socket and the
+// /fetch proxy are one open firewall away from the internet; on a server that
+// is reached through an SSH tunnel to 127.0.0.1, loopback is all it needs.
+const HOST = process.env.JARVIS_BRIDGE_HOST || '127.0.0.1'
 
 /**
  * A crash here takes the whole assistant down mid-sentence, and most of what
@@ -105,6 +114,42 @@ function originAllowed(origin) {
   if (url.protocol !== 'http:') return false
   if (!LOCAL_HOSTS.has(url.hostname)) return false
   return isDevPort(Number(url.port))
+}
+
+/**
+ * Which Host header the bridge answers to — the guard against DNS rebinding.
+ *
+ * Same-origin GETs carry no Origin, so a page on attacker.example whose name
+ * is re-pointed at 127.0.0.1 would pass the origin check above and read /file,
+ * /img and /page through the user's SSH tunnel. Its requests still name
+ * attacker.example in Host, so only loopback names (any port — the tunnel may
+ * remap it) and hosts listed in JARVIS_ALLOWED_ORIGINS / JARVIS_ALLOWED_HOSTS
+ * are served.
+ */
+const EXTRA_HOSTS = new Set(
+  [
+    ...[...EXTRA_ORIGINS].map((o) => {
+      try {
+        return new URL(o).hostname
+      } catch {
+        return ''
+      }
+    }),
+    ...(process.env.JARVIS_ALLOWED_HOSTS ?? '').split(','),
+  ]
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+)
+
+function hostAllowed(host) {
+  if (!host) return false
+  let name
+  try {
+    name = new URL(`http://${host}`).hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  return LOCAL_HOSTS.has(name) || EXTRA_HOSTS.has(name)
 }
 
 /**
@@ -207,6 +252,15 @@ if (process.platform === 'win32') YM.warm()
  * still needs a spoken yes to its read-back in the page.
  */
 const CAL = createGoogleCalendar({ log: (line) => console.log(line) })
+
+/**
+ * The local knowledge base (knowledge.mjs). Opened once; if it cannot be, the
+ * bridge runs without it — every lookup is then a miss and every question goes
+ * to Claude exactly as before. Read-only from the page: there is no route that
+ * writes to it.
+ */
+const KNOWLEDGE = startKnowledge()
+if (KNOWLEDGE.kb) console.log('[knowledge] ready')
 
 /**
  * The usage limit, once it is known to be reached.
@@ -418,6 +472,10 @@ const LANG = (() => {
  */
 const DRY_ASK = process.env.JARVIS_DRY_ASK === '1'
 const TRACE = DRY_ASK || process.env.VITE_TRACE === '1'
+// Page trace frames also go to logs/trace.jsonl (2 MB x 3 files, written off
+// the hot path). Dialogue words stay out unless JARVIS_DIALOG_LOG=1.
+const DIALOG_LOG = process.env.JARVIS_DIALOG_LOG === '1'
+const TURN_LOG = TRACE ? createTurnLog({ dir: join(PROJECT_ROOT, 'logs'), dialog: DIALOG_LOG }) : null
 // Long enough (about ten seconds aloud) to cut off mid-sentence, and free of
 // every word in voice.ts's OVERRIDE list, or his own echo would interrupt it.
 const DRY_REPLY =
@@ -435,8 +493,11 @@ const BASE_PROMPT = `You are JARVIS. You are speaking out loud to one person.
 
 LENGTH. Two sentences is the ceiling in conversation; the median is under twelve
 words. Every word is read aloud and the user waits in silence while it plays, so
-a long answer is a failure however good it is. Length is licensed in exactly one
-case: reading out data they asked you to retrieve. Conversation never licenses it.
+a long answer is a failure however good it is. Length is licensed in two cases:
+reading out data they asked you to retrieve, and an explanation they explicitly
+asked to have in detail ("in detail", "explain properly", "tell me everything").
+Then say as much as the subject needs and no more, still as plain speech, and
+return to short lines on the next turn. Nothing else licenses it.
 
 URGENCY IS SIGNALLED BY DELETING WORDS, NOT ADDING THEM. As a situation worsens
 your lines get shorter, not louder. A full clause becomes a clause, becomes a
@@ -469,6 +530,24 @@ queries. A follow-up like "and tomorrow?" or "the second one" refers to what was
 just said — resolve it from context instead of asking what they mean. Never
 recap the previous answer. Vary how lines open; two answers in a row that start
 the same way sound mechanical.
+- "Simpler" means the same content in plainer words; "shorter" means your last
+  answer cut down, not a new one; "compare" means the options just discussed;
+  "the second one" means the second thing you yourself offered.
+- "No, I meant something else" means your reading was wrong: take the other
+  reading that fits, or, if there is none, ask one short question about what
+  they meant. Never defend the first reading.
+- "Back to the previous topic" means the subject before the current one.
+- Ask one short clarifying question only when the reference could genuinely
+  mean two different things, or the answer depends on a fact about them they
+  have not given. Never ask about what is plain from the conversation.
+- A note in parentheses marked as a service note is for you, not them: it says
+  what the interface answered by itself. Treat it as part of the conversation;
+  never read it out or mention it.
+
+HONESTY. Keep what you know apart from what you assume. A guess is said as a
+guess, in a word or two ("probably", "if I have it right"), never as a fact.
+Never attribute to them a fact, a plan, a budget or a preference they did not
+state. When something cannot be known from here, say so plainly in one line.
 
 NEVER.
 - No filler words at all: no um, well, so, okay, right, let me check, one moment.
@@ -521,6 +600,10 @@ The blades — the ONLY surface:
   the spoken answer before the \`display\` or \`blade\` call, never after it:
   composing a panel takes seconds, and they wait in silence for every one of
   them. A spoken answer they did not ask to see needs no blade at all.
+- Put nothing on screen unless they asked to see it in this turn: "show me",
+  "on screen", a table, a chart. The weather, a fact, a figure or a price they
+  asked about is spoken and nothing more, even when you searched for it. A
+  panel you compose unasked is refused and only costs them the wait.
 
 The interface itself:
 - The interface is yours as well. \`ui_theme\` retints it, \`ui_reactor\` reshapes
@@ -667,7 +750,24 @@ const RUSSIAN = `
 вслух его не называй.
 
 - Коротко: одна-две фразы, чаще всего меньше двенадцати слов. Длиннее — только
-  когда зачитываешь данные, о которых попросили.
+  когда зачитываешь данные, о которых попросили, или когда прямо попросили
+  объяснить подробно («подробнее», «объясни нормально», «расскажи всё»): тогда
+  столько, сколько нужно теме, и снова коротко со следующей реплики.
+- «Проще» — то же самое простыми словами. «Короче» — сократи свой прошлый ответ.
+  «Сравни» — сравни то, о чём только что говорили. «Второй вариант» — второй из
+  тех, что ты сам предложил. «Нет, я другое имел в виду» — твоё понимание
+  неверно: возьми другое подходящее или коротко спроси, что именно. «Вернись к
+  предыдущей теме» — к теме до нынешней.
+- «Мой проект», «проект» без названия — проект в папке, с которой работают
+  инструменты pc_*, то есть сам этот голосовой помощник. Чего о нём не знаешь,
+  не выдумывай: посмотри через pc_* или спроси.
+- Уточняющий вопрос — один и короткий, и только когда ссылка правда допускает
+  два смысла или ответ зависит от того, чего пользователь не сказал.
+- Факт и предположение не смешивай: догадку называй догадкой («скорее всего»,
+  «если я правильно понял»). Не приписывай пользователю того, чего он не
+  говорил.
+- Служебная заметка в скобках — для тебя: что интерфейс ответил сам, без тебя.
+  Это часть разговора. Не озвучивай её и не упоминай.
 - Сразу к сути. Не повторяй и не пересказывай вопрос: на «Какая погода?» —
   «Плюс двенадцать, облачно», а не «Погода в Москве сейчас такая…». Не
   подытоживай свой прошлый ответ.
@@ -725,6 +825,33 @@ function elevenKey() {
     return null
   }
 }
+
+/**
+ * Deepgram credential, from the environment only (systemd loads
+ * /opt/jarvis/.env.bridge). Never read from a file here, never sent to the
+ * browser, never logged. Blank counts as missing.
+ */
+const deepgramKey = () => cleanKey(process.env.DEEPGRAM_API_KEY)
+
+/**
+ * Which engine does realtime recognition. JARVIS_STT=elevenlabs|deepgram pins
+ * it (a pinned engine without its key means the browser engine); unset, a
+ * Deepgram key wins over an ElevenLabs one.
+ */
+function sttEngine() {
+  const pin = (process.env.JARVIS_STT ?? '').trim().toLowerCase()
+  const dg = Boolean(deepgramKey())
+  const eleven = Boolean(elevenKey())
+  if (pin === 'elevenlabs') return eleven ? 'elevenlabs' : null
+  if (pin === 'deepgram') return dg ? 'deepgram' : null
+  return dg ? 'deepgram' : eleven ? 'elevenlabs' : null
+}
+
+const sttProxy = createSttProxy({
+  key: deepgramKey,
+  lang: LANG === 'ru' ? 'ru' : 'en',
+  log: (m) => console.log(`[jarvis] ${m}`),
+})
 
 const VOICE_ID = process.env.JARVIS_VOICE_ID ?? 'JBFqnCBsd6RMkjVDRZzb'
 
@@ -931,7 +1058,16 @@ function corsFor(req) {
 // One HTTP server for both the speech proxy and the WebSocket upgrade.
 const http = await import('node:http')
 
+/** Minimum gap between realtime Scribe tokens: a loop of failed starts must not hammer the API. */
+const SCRIBE_TOKEN_GAP_MS = 2000
+let lastScribeToken = 0
+
 const handleRequest = async (req, res) => {
+  if (!hostAllowed(req.headers.host)) {
+    console.warn(`[jarvis] refused http request for host ${req.headers.host ?? '(none)'}`)
+    res.writeHead(403, { vary: 'origin' })
+    return res.end('forbidden')
+  }
   const origin = req.headers.origin
   if (origin && !originAllowed(origin)) {
     console.warn(`[jarvis] refused http request from origin ${origin}`)
@@ -958,17 +1094,67 @@ const handleRequest = async (req, res) => {
     const eleven = Boolean(elevenKey())
     const voices = eleven ? [] : piperVoices(LANG)
     const ttsEngine = eleven ? 'elevenlabs' : voices.length ? 'piper' : null
+    const realtime = sttEngine()
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
     return res.end(
       JSON.stringify({
         ok: true,
         tts: Boolean(ttsEngine),
         stt: eleven,
+        sttRealtime: realtime !== null,
+        sttEngine: realtime,
         ttsEngine,
         voices,
         voice: ttsEngine === 'piper' ? defaultPiperVoice(LANG) : null,
       }),
     )
+  }
+
+  // A single-use token for the browser's realtime Scribe socket. The API key
+  // stays here: the page gets a short-lived credential that opens one
+  // transcription session and nothing else. Neither the token nor the
+  // upstream's error body is logged or passed on.
+  if (req.method === 'GET' && req.url === '/scribe-token') {
+    // Stricter than the rest of this handler: a request with no Origin is
+    // refused unless JARVIS_ALLOW_NO_ORIGIN is set. The <img> case that
+    // excuses it elsewhere does not apply to a fetch for a credential.
+    if (!originAllowed(origin)) {
+      res.writeHead(403, { ...cors, 'cache-control': 'no-store' })
+      return res.end('forbidden')
+    }
+    const key = elevenKey()
+    if (!key) {
+      res.writeHead(503, { ...cors, 'cache-control': 'no-store' })
+      return res.end('no elevenlabs key')
+    }
+    const now = Date.now()
+    if (now - lastScribeToken < SCRIBE_TOKEN_GAP_MS) {
+      res.writeHead(429, { ...cors, 'cache-control': 'no-store', 'retry-after': '2' })
+      return res.end('too many requests')
+    }
+    lastScribeToken = now
+    try {
+      const upstream = await fetch('https://api.elevenlabs.io/v1/single-use-token/realtime_scribe', {
+        method: 'POST',
+        headers: { 'xi-api-key': key },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!upstream.ok) {
+        console.warn(`[jarvis] scribe token refused by ElevenLabs (${upstream.status})`)
+        res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
+        return res.end('token request failed')
+      }
+      const { token } = await upstream.json()
+      if (typeof token !== 'string' || !token) {
+        res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
+        return res.end('token request failed')
+      }
+      res.writeHead(200, { ...cors, 'cache-control': 'no-store', 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ token }))
+    } catch {
+      res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
+      return res.end('token request failed')
+    }
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
@@ -1115,6 +1301,31 @@ const handleRequest = async (req, res) => {
     }
     const result = await calendarAction(CAL, cmd)
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+    return res.end(JSON.stringify(result))
+  }
+
+  // A question the page asks before it asks Claude: is it one the user has
+  // already told JARVIS the answer to? Read-only; a miss is a normal 200 with
+  // hit:false, and a bridge without a database simply always misses.
+  if (req.method === 'POST' && req.url === '/knowledge/answer') {
+    let body = ''
+    for await (const chunk of req) {
+      body += chunk
+      if (body.length > 4096) {
+        req.destroy()
+        res.writeHead(413, cors)
+        return res.end('body too large')
+      }
+    }
+    let ask
+    try {
+      ask = JSON.parse(body || '{}')
+    } catch {
+      res.writeHead(400, cors)
+      return res.end('bad json')
+    }
+    const result = answerRequest(KNOWLEDGE.kb, ask, { log: (line) => console.log(line), defer: setImmediate })
+    res.writeHead(200, { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' })
     return res.end(JSON.stringify(result))
   }
 
@@ -1359,8 +1570,12 @@ const wss = new WebSocketServer({
   // 403 would look like the bridge simply isn't running.
   verifyClient: ({ origin, req }, done) => {
     const path = (req.url ?? '/').split('?')[0]
-    if (path !== '/' && path !== '/ws') {
+    if (path !== '/' && path !== '/ws' && path !== STT_PATH) {
       console.warn(`[jarvis] rejected websocket on path ${path}`)
+      return done(false, 403, 'Forbidden')
+    }
+    if (!hostAllowed(req.headers.host)) {
+      console.warn(`[jarvis] rejected websocket for host ${req.headers.host ?? '(none)'}`)
       return done(false, 403, 'Forbidden')
     }
     if (!originAllowed(origin)) {
@@ -1373,9 +1588,9 @@ const wss = new WebSocketServer({
     done(true)
   },
 })
-server.listen(PORT)
+server.listen(PORT, HOST)
 
-console.log(`[jarvis] bridge listening on ws://localhost:${PORT}`)
+console.log(`[jarvis] bridge listening on ws://${HOST}:${PORT}`)
 console.log(`[jarvis] language ${LANG === 'ru' ? 'ru (Russian answers)' : 'en'}`)
 if (DRY_ASK) console.log('[jarvis] DRY mode — questions get a fixed reply, Claude is never called')
 if (TRACE) console.log('[jarvis] trace on — page steps print as [trace]')
@@ -1393,6 +1608,7 @@ if (TRACE) console.log('[jarvis] trace on — page steps print as [trace]')
     }`,
   )
 }
+console.log(`[jarvis] recognition ${sttEngine() ?? 'browser engine (no Deepgram or ElevenLabs key)'}`)
 console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(
   `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED' : 'disabled'}` +
@@ -1444,7 +1660,9 @@ const RESULT_FAILURES =
         default: 'The turn ended without an answer.',
       }
 
-wss.on('connection', (socket) => {
+wss.on('connection', (socket, req) => {
+  // Streaming recognition shares the port and the Origin check, not the agent.
+  if ((req.url ?? '/').split('?')[0] === STT_PATH) return sttProxy.accept(socket)
   console.log('[jarvis] client connected')
 
   // Answer the HUD straight away rather than making it wait for the agent's
@@ -1460,6 +1678,16 @@ wss.on('connection', (socket) => {
 
   /** The effort the session is on now, so it is only changed when it differs. */
   let sessionEffort = EFFORT
+
+  /** Whether this turn's question asked to see something — see visual.mjs. */
+  let turnMayShow = false
+
+  /**
+   * Which of the page's asides this session has been handed, by id. Per
+   * connection, because the socket is the session: a reconnect is a session
+   * that has heard none of them, and gets them all.
+   */
+  const asideLedger = createAsideLedger()
 
   /** Set this turn's effort before the question goes in. Never fatal. */
   const tuneFor = async (text) => {
@@ -1490,12 +1718,34 @@ wss.on('connection', (socket) => {
 
   async function* userMessages() {
     while (!closed) {
-      const text =
+      const item =
         inbox.shift() ??
         (await new Promise((resolve) => {
           deliver = resolve
         }))
-      if (closed || text == null) return
+      if (closed || item == null) return
+      // The question, and what the page answered by itself before it (aside.ts
+      // in the page). Effort is sorted on the question alone: the note is long
+      // and says nothing about how hard this one is.
+      const { text } = item
+      // Only the exchanges this session has not been handed yet. A turn that
+      // reached the model and then failed leaves the page holding its asides,
+      // and the page sends them again with the next question; the session
+      // already has them, so they are not said twice. New exchanges have new
+      // ids and always go in.
+      const fresh = asideLedger.fresh(item.asides ?? [])
+      if (item.asides?.length && fresh.length < item.asides.length) {
+        console.log(`[jarvis] asides: ${fresh.length} new, ${item.asides.length - fresh.length} already in the session`)
+      }
+      // What the local knowledge base holds on this question goes to Claude as
+      // labelled notes — data to weigh, never instructions. The page asks the
+      // base before it gets here, so reaching this point is a fallback.
+      const kn = notesFor(KNOWLEDGE.kb, text)
+      console.log(
+        `[knowledge] claude_fallback notes=${kn.notes.length} search=${kn.ms}ms${KNOWLEDGE.kb ? '' : ' (no knowledge base)'}${kn.error ? ` error="${kn.error}"` : ''}`,
+      )
+      const context = [fresh.length ? formatAsides(fresh, LANG) : null, formatNotes(kn.notes, LANG)].filter(Boolean).join('\n\n') || null
+      turnMayShow = asksToSee(text)
       await tuneFor(text)
       const note = await browserNote()
       if (lat) {
@@ -1505,9 +1755,12 @@ wss.on('connection', (socket) => {
       // Tells the page how this question was sorted, so it can say a word at
       // once when a long wait is likely (App.tsx) instead of seconds later.
       sendTurn({ type: 'effort', level: ROUTE_EFFORT ? effortFor(text) : sessionEffort })
+      // Recorded at the hand-over and not before: a question superseded in the
+      // queue never gets here, so its asides are still fresh for the next one.
+      asideLedger.delivered(fresh)
       yield {
         type: 'user',
-        message: { role: 'user', content: text + note },
+        message: { role: 'user', content: withAside(text, context) + note },
         parent_tool_use_id: null,
       }
     }
@@ -1580,6 +1833,8 @@ wss.on('connection', (socket) => {
    */
   const seenTools = new Set()
   const heldTools = new Map()
+  /** Closes each text block of an answer with a space — see turnText.mjs. */
+  const blockJoin = createBlockJoin()
 
   /**
    * Resolves when the turn in flight has actually finished.
@@ -1717,6 +1972,12 @@ wss.on('connection', (socket) => {
         jarvis: displayServer(
           (panel) => send({ type: 'panel', panel }),
           (blade) => send({ type: 'blade', blade }),
+          {
+            // A composed panel only when this turn's question asked to see
+            // something — see visual.mjs.
+            mayShow: () => turnMayShow,
+            onRefused: (what) => console.log(`[jarvis] panel refused (${what}): not asked to see`),
+          },
         ),
         // The interface controls, on the same socket. A separate key because
         // MCP tool names are `mcp__<key>__<tool>` and one key can only carry
@@ -1848,6 +2109,10 @@ wss.on('connection', (socket) => {
               if (lat && !lat.text) lat.text = performance.now()
               sendTurn({ type: 'text', delta: ev.delta.text })
             }
+            // A text block that ends before a tool: its last sentence goes now,
+            // not after the tool has run — see turnText.mjs.
+            const gap = blockJoin(ev)
+            if (gap) sendTurn({ type: 'text', delta: gap })
             if (
               ev?.type === 'content_block_start' &&
               ev.content_block?.type === 'tool_use'
@@ -2031,11 +2296,13 @@ wss.on('connection', (socket) => {
     // truncated, so nothing the page sends can flood or forge the log.
     if (msg.type === 'trace') {
       if (TRACE && typeof msg.step === 'string') {
-        const info = Object.entries(msg.info && typeof msg.info === 'object' ? msg.info : {})
-          .slice(0, 8)
-          .map(([k, v]) => `${String(k).slice(0, 20)}=${String(v).replace(/\s+/g, ' ').slice(0, 60)}`)
+        const at = typeof msg.at === 'number' ? msg.at : Date.now()
+        const info = cleanInfo(msg.info, DIALOG_LOG)
+        TURN_LOG?.add(msg.step, info, at)
+        const line = Object.entries(info)
+          .map(([k, v]) => `${k}=${v}`)
           .join(' ')
-        console.log(`[trace] ${msg.step.slice(0, 40)} ${info}`)
+        console.log(`[trace] ${msg.step.slice(0, 40)} ${line}`)
       }
       return
     }
@@ -2072,6 +2339,7 @@ wss.on('connection', (socket) => {
        * already-resolved promise — and removes the cross-talk when there is.
        */
       const text = msg.text
+      const asides = asidesFrom(msg.asides)
       const id = typeof msg.id === 'string' ? msg.id : null
       // The usage limit is reached and has not lifted yet: answer at once,
       // without another request against it. Nothing is queued, so a newer
@@ -2108,9 +2376,9 @@ wss.on('connection', (socket) => {
           if (deliver) {
             const resolve = deliver
             deliver = null
-            resolve(text)
+            resolve({ text, asides })
           } else {
-            inbox.push(text)
+            inbox.push({ text, asides })
           }
         })
     }

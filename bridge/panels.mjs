@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { probeUrl } from './page.mjs'
+import { NOT_ASKED_TO_SEE } from './visual.mjs'
 
 /**
  * The `display` tool — JARVIS's screen.
@@ -189,12 +190,14 @@ const DESCRIPTION = `Put something on the JARVIS heads-up display.
 You are designing the panel, not filling in a template — compose the markup for
 the content at hand and choose the animation, position and colour that suit it.
 
-Use it whenever the answer has substance worth seeing rather than hearing:
-search results, images, screenshots, lists of mail or events, a figure, a short
-readout. If you searched, show the results. If you generated an image, show it.
-If you looked at the phone, show the screenshot.
+Use it ONLY when the user asked to see something this turn — "покажи",
+"выведи на экран", "show me", a table, a chart, a list on screen. A question
+asked to be answered — the weather, a fact, a number, a price — is answered
+aloud and nothing more, even when you searched for it: a panel nobody asked for
+keeps them waiting while you compose it. Asked to see search results, images,
+a screenshot, mail or events, show them.
 
-If the search came back with pictures, show the pictures — thumbnails from the
+If they asked to see the results and the search came back with pictures, show the pictures — thumbnails from the
 web render properly here, and describing an image you are holding the URL of is
 a worse answer than putting it on the screen. If it came back with a video,
 embed it so it plays.
@@ -317,18 +320,30 @@ argument. You know those things. Overrule it whenever you have reason to.`
  * @param {(panel: object) => void} emit - pushes the panel to the browser
  * @param {(blade: object) => void} emitBlade - pushes a blade to the browser
  */
-export function displayServer(emit, emitBlade) {
+export function displayServer(emit, emitBlade, { mayShow = () => true, onRefused = () => {} } = {}) {
+  /**
+   * A composed panel only when they asked to see one — see visual.mjs. Enforced
+   * here, at the tool, rather than trusted to the prompt: the description used
+   * to say the opposite, and a description is advice.
+   */
+  const refusedUnasked = (what) => {
+    if (mayShow()) return null
+    onRefused(what)
+    return { isError: true, content: [{ type: 'text', text: NOT_ASKED_TO_SEE }] }
+  }
   return createSdkMcpServer({
     name: 'jarvis',
     version: '1.0.0',
     instructions:
       'The JARVIS heads-up display. Use `display` to put content on screen ' +
-      'alongside what you say.',
+      'alongside what you say — only when the user asked to see something.',
     // Never defer this behind tool search — if the model has to go looking for
     // it, it won't occur to it to show anything.
     alwaysLoad: true,
     tools: [
       tool('display', DESCRIPTION, schema, async (args) => {
+        const unasked = refusedUnasked('display')
+        if (unasked) return unasked
         // Refuse rather than warn. Emitting anyway put a blank card on screen
         // and told the model nothing, so it had no reason to try again; handed
         // back as an error it gets one more go with actual content in it.
@@ -390,6 +405,11 @@ export function displayServer(emit, emitBlade) {
         }
         if (kind === 'markup' && !String(args.html ?? '').trim()) {
           return refuse('Not opened: kind "markup" needs an `html` body.')
+        }
+        // Composed markup is the display panel by another door.
+        if (kind === 'markup') {
+          const unasked = refusedUnasked('blade:markup')
+          if (unasked) return unasked
         }
         if (['article', 'image', 'video', 'embed'].includes(kind) && !url) {
           return refuse(`Not opened: kind "${kind}" needs a \`url\`.`)

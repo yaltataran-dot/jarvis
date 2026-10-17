@@ -1,7 +1,7 @@
 import { STOP_ONLY } from './stopWords'
 
 /** Where a phrase went — see routePhrase. */
-export type Route = 'calendar' | 'music' | 'local' | 'stop' | 'stale' | 'model'
+export type Route = 'calendar' | 'music' | 'local' | 'known' | 'stop' | 'stale' | 'model'
 
 /**
  * Who answers a phrase, before the model is asked.
@@ -21,6 +21,13 @@ export type Route = 'calendar' | 'music' | 'local' | 'stop' | 'stale' | 'model'
  * After the calendar and the music, a question the page can answer itself —
  * the time, the date, his name, his voice (see localAnswer.ts) — is answered
  * on the spot, with no model turn.
+ *
+ * Then a question the user has already told JARVIS the answer to (the local
+ * knowledge base, via `known`). It comes after the stop on purpose: whatever
+ * is stored there, a stop is a stop and a command is a command — the base only
+ * ever answers what nothing else took, and only what it is certain of. When it
+ * has nothing certain, or is slow, or is down, the phrase goes to the model
+ * exactly as it would have without it.
  */
 export async function routePhrase<M>(
   said: string,
@@ -34,6 +41,9 @@ export async function routePhrase<M>(
     /** The page's own answer to the phrase, if it has one. */
     local?: (said: string) => string | null
     sayLocal?: (answer: string) => Promise<void>
+    /** A verified answer from the knowledge base, or null. Must not throw. */
+    known?: (said: string) => Promise<string | null>
+    sayKnown?: (answer: string) => Promise<void>
   },
 ): Promise<Route> {
   if (h.calendarWaiting() && (await h.calendar(said))) return 'calendar'
@@ -50,5 +60,14 @@ export async function routePhrase<M>(
     return 'local'
   }
   if (STOP_ONLY.test(said)) return 'stop'
+  if (h.known && h.sayKnown) {
+    const stored = await h.known(said)
+    // The user may have spoken again while the base was consulted.
+    if (h.stale()) return 'stale'
+    if (stored) {
+      await h.sayKnown(stored)
+      return 'known'
+    }
+  }
   return 'model'
 }
