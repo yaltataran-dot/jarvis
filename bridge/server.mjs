@@ -182,10 +182,12 @@ function hostAllowed(host) {
  * Never as root: the shell it opens would be the whole machine's. A bridge
  * running as root keeps writes off whatever the flag says — see writesAllowed.
  */
-const WRITES = writesAllowed(process.env, process.getuid?.())
+const WRITES = writesAllowed(process.env, { uid: process.getuid?.(), platform: process.platform })
 const ALLOW_WRITES = WRITES.allowed
-if (WRITES.refusedAsRoot) {
+if (WRITES.refused === 'root') {
   console.warn('[jarvis] JARVIS_ALLOW_WRITES=1 refused: the bridge runs as root — writes stay off')
+} else if (WRITES.refused === 'unknown-uid') {
+  console.warn('[jarvis] JARVIS_ALLOW_WRITES=1 refused: the user this bridge runs as is unknown — writes stay off')
 }
 
 /**
