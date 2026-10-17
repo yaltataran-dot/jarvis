@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Scene } from './scene/Scene'
 import { Hud } from './ui/Hud'
+import { ErrorBoundary } from './ui/ErrorBoundary'
 import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
@@ -25,6 +26,7 @@ import * as kokoro from './lib/kokoro'
 import { LANG, TTS_ENGINE } from './config'
 import { forTool, attention, checking, considering, STARTUP_GREETING } from './lib/fillers'
 import { localAnswer, sayClock } from './lib/localAnswer'
+import { knownAnswer } from './lib/knowledgeClient'
 import {
   ask,
   warm,
@@ -278,6 +280,9 @@ export default function App() {
       local: (p) =>
         localAnswer(p, { now: new Date(), voice: store.getState().voice, connected: !usingBridge || isConnected() }),
       sayLocal: (answer) => localTurn(answer, t, said),
+      // After the stop and every command: an answer the user taught him.
+      known: usingBridge ? (p) => knownAnswer(p) : undefined,
+      sayKnown: (answer) => localTurn(answer, t, said, 'known'),
     })
     if (route === 'stop') {
       t.done('stop')
@@ -502,19 +507,24 @@ export default function App() {
    * voice (localAnswer.ts). No model turn, so nothing to interrupt; the
    * floor still owns the voice, so a newer turn cuts it like any other.
    */
-  const localTurn = async (answer: string, t: Turn<Speaker>, said: string): Promise<void> => {
+  const localTurn = async (
+    answer: string,
+    t: Turn<Speaker>,
+    said: string,
+    how: 'local' | 'known' = 'local',
+  ): Promise<void> => {
     const stale = t.stale
-    trace('app:local', { len: answer.length })
+    trace(`app:${how}`, { len: answer.length })
     const s = store.getState()
     s.pushTurn({ id: newId(), role: 'jarvis', text: answer })
     asides.current!.add(said, answer)
     s.setPhase('speaking')
-    const spk = t.speaker(() => createSpeaker(), 'local')
+    const spk = t.speaker(() => createSpeaker(), how)
     spk.say(answer)
     await spk.end()
     if (stale()) return
     t.release(spk)
-    t.done('local')
+    t.done(how)
     void listenWhenReady(FOLLOW_UP_MS, () => !stale())
   }
 
@@ -1237,7 +1247,9 @@ export default function App() {
 
   return (
     <>
-      <Scene />
+      <ErrorBoundary scope="scene">
+        <Scene />
+      </ErrorBoundary>
       <VoiceWaves />
       <Hud />
       <Boot />

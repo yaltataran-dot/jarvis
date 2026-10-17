@@ -20,6 +20,10 @@ import { BACKEND, BRIDGE_HTTP_URL, env } from '../config'
 export type Capabilities = {
   /** ElevenLabs speech-to-text (Scribe) is reachable via the bridge. */
   stt: boolean
+  /** ...and can hand out a single-use token for realtime Scribe (scribe_v2_realtime). */
+  sttRealtime: boolean
+  /** Which engine does realtime recognition: Deepgram or ElevenLabs Scribe, or none. */
+  sttEngine: 'deepgram' | 'elevenlabs' | null
   /** The bridge can speak — ElevenLabs, or a local Piper voice. */
   tts: boolean
   /** Which engine is behind `tts`. Piper is the free, local one. */
@@ -30,7 +34,7 @@ export type Capabilities = {
   voice: string | null
 }
 
-const NONE: Capabilities = { stt: false, tts: false, ttsEngine: null, voices: [], voice: null }
+const NONE: Capabilities = { stt: false, sttRealtime: false, sttEngine: null, tts: false, ttsEngine: null, voices: [], voice: null }
 
 /** Browser-only until the probe says otherwise. Safe default: the app works. */
 let current: Capabilities = NONE
@@ -81,6 +85,10 @@ async function probe(): Promise<Capabilities> {
       const tts = Boolean(h.tts)
       current = {
         stt: Boolean(h.stt),
+        // An older bridge has no token endpoint and does not report this.
+        sttRealtime: Boolean(h.sttRealtime),
+        // An older bridge reports only sttRealtime, and then it was Scribe.
+        sttEngine: h.sttEngine === 'deepgram' ? 'deepgram' : h.sttRealtime ? 'elevenlabs' : null,
         tts,
         // An older bridge reports only the booleans, and then a voice can only
         // have been ElevenLabs.
@@ -100,6 +108,9 @@ async function probe(): Promise<Capabilities> {
 /** A short human label for the HUD: what voice stack is actually in play. */
 export function engineLabel(): string {
   const c = current
+  if (c.sttEngine === 'deepgram' && c.ttsEngine === 'piper') return 'Deepgram + Piper'
+  if (c.sttEngine === 'deepgram' && c.tts) return 'Deepgram + ElevenLabs'
+  if (c.sttEngine === 'deepgram') return 'Deepgram'
   if (c.stt && c.tts) return 'ElevenLabs'
   if (c.ttsEngine === 'piper') return 'Piper voice'
   if (c.tts) return 'ElevenLabs voice'

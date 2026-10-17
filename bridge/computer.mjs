@@ -23,6 +23,7 @@ import { open, readdir, stat } from 'node:fs/promises'
 import * as nodePath from 'node:path'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { redactSecrets, systemEnv } from './secrets.mjs'
 
 /** The project this bridge lives in — the one folder allowed by default. */
 export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -69,26 +70,17 @@ export const isSecretName = (name) => SECRET_NAMES.some((re) => re.test(name))
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.vite', '.cache', '.next', '.turbo'])
 
 /**
- * Key-shaped strings inside otherwise readable text. A README that quotes a
- * real key, or a test log that prints one, still never sends it on.
+ * Key-shaped strings inside otherwise readable text, and the bridge's own
+ * keys by value (secrets.mjs). A README that quotes a real key, or a test log
+ * that prints one, still never sends it on. On top of that, anything assigned
+ * to a secret-sounding name — stricter than the bridge's own logs need, since
+ * this text goes to the model.
  */
-const SECRET_VALUES = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-  /\bsk-ant-[\w-]{10,}/g,
-  /\bsk-[A-Za-z0-9]{20,}/g,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bxox[abprs]-[\w-]{10,}/g,
-  /\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g,
-]
 const SECRET_ASSIGNMENT =
   /((?:password|passwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|auth)[\w-]*["']?\s*[:=]\s*)(["']?)[^\s"',;]{4,}\2/gi
 
 export function redact(text) {
-  let out = String(text)
-  for (const re of SECRET_VALUES) out = out.replace(re, '[скрыто]')
-  return out.replace(SECRET_ASSIGNMENT, '$1$2[скрыто]$2')
+  return redactSecrets(text).replace(SECRET_ASSIGNMENT, '$1$2[скрыто]$2')
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +258,8 @@ export function createComputer(o = {}) {
     if (now() - last < LIMITS.reopenMs) return { app, label: a.label, already: true }
     if (!existsSync(a.exe)) throw new Error(`${a.label} не найден на этом компьютере.`)
     await new Promise((res, rej) => {
-      const child = spawn(a.exe, a.args, { detached: true, stdio: 'ignore', windowsHide: false, shell: false })
+      // The bridge's keys stay behind: an editor or a file manager has no use for them.
+      const child = spawn(a.exe, a.args, { detached: true, stdio: 'ignore', windowsHide: false, shell: false, env: systemEnv(process.env) })
       child.once('error', rej)
       child.once('spawn', res)
       child.unref?.()
@@ -379,7 +372,10 @@ export function createComputer(o = {}) {
         cwd: PROJECT_ROOT,
         shell: false,
         windowsHide: true,
-        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+        // The system's basics only: the checks run the project's own code,
+        // which the model can read, and a test that printed the environment
+        // would print the bridge's keys.
+        env: { ...systemEnv(process.env), FORCE_COLOR: '0', NO_COLOR: '1' },
       })
       const take = (b) => {
         if (out.length < 200_000) out += b.toString()
@@ -392,7 +388,7 @@ export function createComputer(o = {}) {
         why = reason
         // The whole tree: node --test runs each file in its own process.
         if (platform === 'win32' && child.pid) {
-          spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, shell: false })
+          spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, shell: false, env: systemEnv(process.env) })
         } else child.kill('SIGKILL')
       }
       const timer = setTimeout(() => kill('timeout'), c.timeoutMs)

@@ -9,6 +9,7 @@ import {
 } from '@react-three/postprocessing'
 import { BlendFunction } from 'postprocessing'
 import * as THREE from 'three'
+import { ContextGuard } from './ContextGuard'
 import { Core } from './Core'
 import { Particles } from './Particles'
 import { Orbits } from './Orbits'
@@ -200,6 +201,7 @@ export function Scene() {
       gl={{ antialias: true, alpha: true }}
       dpr={[1, 2]}
     >
+      <ContextGuard />
       <Rig />
       {/*
         multisampling={0} on purpose. The default is 8, which allocates a

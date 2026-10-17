@@ -170,6 +170,24 @@ test('a late final that adds words to the phrase just sent replaces it whole, no
   v.voice.stop()
 })
 
+test('a late final whose added words hold "нет" still replaces the half-question whole', () => {
+  const v = rig('command')
+  v.rec().hear(0, ['какая погода', false])
+  endpoint()
+  mock.timers.tick(1600)
+  assert.deepEqual(v.utterances.map((u) => u[0]), ['какая погода'])
+  // The same result, finalised with the rest — and the rest has "нет" in it.
+  v.rec().hear(0, ['какая погода, нет ли дождя', true])
+  endpoint()
+  mock.timers.tick(1600)
+  assert.deepEqual(
+    v.utterances.map((u) => u[0]),
+    ['какая погода', 'какая погода нет ли дождя'],
+    'the second turn carries the whole question, not the tail "нет ли дождя"',
+  )
+  v.voice.stop()
+})
+
 test('a new phrase after the one just sent is still its own question', () => {
   const v = rig('command')
   v.rec().hear(0, ['какая погода в москве', true])
@@ -202,6 +220,21 @@ test('his own answer through the microphone is never a command, nor a barge-in',
   mock.timers.tick(2000)
   assert.equal(v.speechStarts(), 0)
   assert.equal(v.utterances.length, 0)
+  v.voice.stop()
+})
+
+test('in guard, "не важно" cuts in on its first interim, as "неважно" does', () => {
+  const v = rig('guard')
+  // He is thinking, not speaking; the recogniser has only a guess so far.
+  v.rec().hear(0, ['не важно', false])
+  assert.equal(v.speechStarts(), 1, 'a stop word waited for the recogniser to finalise')
+  v.voice.stop()
+})
+
+test('in guard, "неважно" cuts in on its first interim (control)', () => {
+  const v = rig('guard')
+  v.rec().hear(0, ['неважно', false])
+  assert.equal(v.speechStarts(), 1, 'a stop word waited for the recogniser to finalise')
   v.voice.stop()
 })
 
@@ -414,4 +447,28 @@ test('stopped: no recogniser restarts, nothing fires afterwards', () => {
   mock.timers.tick(60_000)
   assert.equal(FakeRecognition.all.length, n, 'no new session')
   assert.equal(v.utterances.length, 0, 'the held phrase was dropped, not sent later')
+})
+
+test('a bare "нет" finalised on the same result as the half-question ends the rest, so it is not swallowed by the question', () => {
+  const v = rig('command')
+  v.rec().hear(0, ['какая погода', false])
+  endpoint()
+  mock.timers.tick(1600)
+  v.rec().hear(0, ['какая погода нет', true])
+  endpoint()
+  mock.timers.tick(1600)
+  assert.deepEqual(v.utterances.map((u) => u[0]), ['какая погода', 'нет'])
+  v.voice.stop()
+})
+
+test('a bare "нет" as a result of its own after the question stays its own utterance', () => {
+  const v = rig('command')
+  v.rec().hear(0, ['какая погода', false])
+  endpoint()
+  mock.timers.tick(1600)
+  v.rec().hear(0, ['какая погода', true], ['нет', true])
+  endpoint()
+  mock.timers.tick(1600)
+  assert.deepEqual(v.utterances.map((u) => u[0]), ['какая погода', 'нет'])
+  v.voice.stop()
 })

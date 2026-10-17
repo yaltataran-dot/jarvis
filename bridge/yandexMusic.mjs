@@ -33,6 +33,7 @@ import { existsSync as nodeExists } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
+import { withoutSecrets } from './secrets.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -331,7 +332,7 @@ export function createYandexMusic(o = {}) {
       const child = spawn(
         process.env.ComSpec || 'cmd.exe',
         ['/d', '/s', '/c', `start "" "${APP_EXE}" --remote-debugging-port=${CDP_PORT}`],
-        { windowsVerbatimArguments: true, windowsHide: true, stdio: 'ignore', shell: false },
+        { windowsVerbatimArguments: true, windowsHide: true, stdio: 'ignore', shell: false, env: withoutSecrets(process.env) },
       )
       child.once('error', rej)
       child.once('exit', (code) => (code === 0 ? res() : rej(new Error(`Яндекс Музыка не запустилась (код ${code})`))))
@@ -810,7 +811,7 @@ export function createMediaWorker({ log = () => {}, spawn = nodeSpawn, timeoutMs
     const c = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(HERE, 'media.ps1'), '-Serve'],
-      { windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
+      { windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: withoutSecrets(process.env) },
     )
     child = c
     buf = ''
