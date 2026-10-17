@@ -34,3 +34,9 @@ public/mediapipe/
 # Local knowledge base (bridge/knowledge.mjs): personal data, never tracked.
 # JARVIS_KB_DIR can point it elsewhere.
 data/
+
+# Notes about the production server — its address, how it is reached, where
+# its keys and backups live. Kept outside the repository, which is public.
+/SYSTEM_AUDIT.md
+/PORTS_AND_STARTUP.md
+/VPS_UPDATE_PLAN.md
