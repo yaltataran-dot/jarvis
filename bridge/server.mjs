@@ -23,7 +23,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
@@ -33,8 +33,10 @@ import { effortFor } from './effort.mjs'
 import { asidesFrom, createAsideLedger, createBlockJoin, formatAsides, withAside } from './turnText.mjs'
 import { asksToSee } from './visual.mjs'
 import {
+  allLoginsLimitedMessage,
   describeFailure,
   fallbackDownMessage,
+  isAuthFailure,
   isRateLimit,
   limitMidTurnMessage,
   rateLimitMessage,
@@ -42,6 +44,7 @@ import {
   turnFailed,
 } from './failures.mjs'
 import { createTurns } from './turns.mjs'
+import { createAccounts } from './accounts.mjs'
 import { createBudget, createFallback, fallbackConfig, fileStore } from './fallback.mjs'
 import { cleanInfo, createTurnLog } from './turnLog.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
@@ -303,12 +306,38 @@ if (KNOWLEDGE.kb) console.log('[knowledge] ready')
  * page's own answers, music, the calendar — goes on working. The first
  * question after the time passes goes to the model as normal. Bridge-wide,
  * because the limit belongs to the account, not to one page.
+ *
+ * Held per login (accounts.mjs): with a second one in JARVIS_CLAUDE_BACKUP_DIR,
+ * a limited primary hands new sessions to the backup until its time passes,
+ * and the model is held off only while both are.
  */
 const LIMIT_PAUSE_FALLBACK_MS = 60_000
 /** Never trust a parsed time to hold the model off for longer than this. */
 const LIMIT_PAUSE_MAX_MS = 6 * 60 * 60_000
-const modelPause = { until: 0, clock: null }
-const modelPaused = () => Date.now() < modelPause.until
+/** A login that refused itself, or whose session would not start, is left alone this long. */
+const ACCOUNT_DOWN_MS = 15 * 60_000
+const ACCOUNTS = createAccounts({ backupDir: backupLoginDir(process.env.JARVIS_CLAUDE_BACKUP_DIR) })
+if (ACCOUNTS.switchable()) console.log('[jarvis] claude logins: primary, backup')
+
+/** The limit's sentence; with two logins and both held off, it says so. */
+const limitMessage = (clock, everyLogin) =>
+  (everyLogin && ACCOUNTS.switchable() ? allLoginsLimitedMessage : rateLimitMessage)(clock, LANG)
+
+/**
+ * The backup login's directory, when it is set and is one. Logged by label
+ * only: the path is the user's, and the login in it is theirs too.
+ */
+function backupLoginDir(raw) {
+  const dir = raw?.trim()
+  if (!dir) return null
+  try {
+    if (statSync(dir).isDirectory()) return dir
+  } catch {
+    // Missing: said below.
+  }
+  console.warn('[jarvis] JARVIS_CLAUDE_BACKUP_DIR is not a directory — backup login off')
+  return null
+}
 
 const PC_ROOTS = [
   PROJECT_ROOT,
@@ -1976,6 +2005,8 @@ wss.on('connection', (socket, req) => {
   let sessionGen = 0
   /** From the init message, so a replacement session keeps the conversation. */
   let sessionId = null
+  /** The login this connection's session runs on — see accounts.mjs. */
+  let account = ACCOUNTS.pick() ?? 'primary'
 
   const openSession = (resume) => query({
     prompt: userMessages(chan),
@@ -2054,7 +2085,8 @@ wss.on('connection', (socket, req) => {
       // whole extra round trip on the first lookup of every session, measured
       // in the 20 s it took to answer "what's the weather". This set of tools
       // is small enough that deferring them saves nothing.
-      env: { ...AGENT_ENV, ENABLE_TOOL_SEARCH: 'false' },
+      // The backup login adds only its own config directory.
+      env: ACCOUNTS.env(account, { ...AGENT_ENV, ENABLE_TOOL_SEARCH: 'false' }),
       maxTurns: 24,
       permissionMode: 'default',
       // Without this the SDK only emits whole assistant messages, and JARVIS
@@ -2098,10 +2130,46 @@ wss.on('connection', (socket, req) => {
     // first question spent 1.1 s waiting for the session to start before it
     // could even be handed over. The initialize handshake is what it waited for.
     const t0 = performance.now()
+    const on = account
+    const label = ACCOUNTS.switchable() ? ` (${on})` : ''
     void Promise.resolve(s.initializationResult?.())
-      .then(() => console.log(`[jarvis] agent session ready in ${Math.round(performance.now() - t0)} ms`))
-      .catch((err) => console.warn(`[jarvis] agent session warm-up failed: ${err?.message ?? err}`))
+      .then(() => console.log(`[jarvis] agent session ready in ${Math.round(performance.now() - t0)} ms${label}`))
+      .catch((err) => {
+        console.warn(`[jarvis] agent session warm-up failed${label}: ${err?.message ?? err}`)
+        // A live session that would not start on the other login: leave that
+        // login alone for a while, so the next turn does not open on it again.
+        // A session closed under it (a switch, a page gone) is not its fault.
+        if (ACCOUNTS.switchable() && gen === sessionGen && !closed) {
+          ACCOUNTS.hold(on, Date.now() + ACCOUNT_DOWN_MS, null, 'down')
+          console.warn(`[jarvis] login ${on} set aside for ${ACCOUNT_DOWN_MS / 60_000} min`)
+        }
+      })
     void pump(s, gen)
+  }
+
+  /**
+   * Move this connection to the `to` login: a new session there, the old one
+   * closed and its stream ignored (sessionGen). Logins keep their own
+   * transcripts, so the new session starts without the conversation so far.
+   * Only ever called between turns, or after a turn's result.
+   */
+  const switchTo = (to, why) => {
+    console.log(`[jarvis] claude login ${account} -> ${to} (${why})`)
+    const old = session
+    chan.closed = true
+    chan.deliver?.(null)
+    chan = { inbox: [], deliver: null, closed: false }
+    sessionGen++
+    try {
+      old?.close?.()
+    } catch {
+      // Already gone.
+    }
+    account = to
+    sessionId = null
+    sessionEffort = EFFORT
+    asideLedger = createAsideLedger()
+    startSession(null)
   }
 
   // Pump a session's output stream to the browser for as long as it is the live one.
@@ -2233,18 +2301,22 @@ wss.on('connection', (socket, req) => {
                 frame: { type: 'error', message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default },
               }
             } else if (isRateLimit(msg, turnApiError)) {
-              // The limit: hold the model off until it lifts — see modelPause.
+              // The limit: hold this login off until it lifts — see ACCOUNTS.
               const reset = rateLimitReset(msg)
               const now = Date.now()
-              modelPause.until = reset ? Math.min(reset.until, now + LIMIT_PAUSE_MAX_MS) : now + LIMIT_PAUSE_FALLBACK_MS
-              modelPause.clock = reset?.clock ?? null
+              const until = reset ? Math.min(reset.until, now + LIMIT_PAUSE_MAX_MS) : now + LIMIT_PAUSE_FALLBACK_MS
+              ACCOUNTS.hold(account, until, reset?.clock ?? null, 'rate')
               console.error(
                 `[jarvis] turn failed after ${turnSeconds()} s: usage limit (429)` +
-                  ` · model paused until ${new Date(modelPause.until).toLocaleTimeString()}`,
+                  (ACCOUNTS.switchable() ? ` · login ${account}` : '') +
+                  ` · model paused until ${new Date(until).toLocaleTimeString()}`,
               )
+              // Every login held off: the user waits for the soonest of them, not this one.
+              const blocked = ACCOUNTS.blocked()
+              const clock = blocked ? blocked.clock : (reset?.clock ?? null)
               outcome = {
                 kind: 'rate',
-                frame: { type: 'error', kind: 'rate', resetAt: modelPause.clock, message: rateLimitMessage(modelPause.clock, LANG) },
+                frame: { type: 'error', kind: 'rate', resetAt: clock, message: limitMessage(clock, Boolean(blocked)) },
               }
             } else {
               const described = describeFailure(msg, turnApiError, LANG)
@@ -2257,6 +2329,12 @@ wss.on('connection', (socket, req) => {
                   (msg.result ? ` · result: ${String(msg.result).slice(0, 300)}` : ''),
                 msg.errors ?? '',
               )
+              // A login that refused itself: with another to go to, set it
+              // aside, so the next turn opens there instead of failing again.
+              if (ACCOUNTS.switchable() && isAuthFailure(msg, turnApiError)) {
+                ACCOUNTS.hold(account, Date.now() + ACCOUNT_DOWN_MS, null, 'down')
+                console.warn(`[jarvis] login ${account} refused — set aside for ${ACCOUNT_DOWN_MS / 60_000} min`)
+              }
               // The specific cause when one is known; otherwise the subtype's
               // own sentence, as before.
               const generic = describeFailure({ subtype: 'unknown' }, null, LANG)
@@ -2394,14 +2472,28 @@ wss.on('connection', (socket, req) => {
         if (!sessionId) asideLedger = createAsideLedger()
         startSession(sessionId)
       },
-      // The usage limit is reached and has not lifted yet: no request against it.
+      // Between turns: the first login not held off — the primary again once its time is up.
+      atBoundary() {
+        const to = ACCOUNTS.pick()
+        if (to && to !== account) switchTo(to, ACCOUNTS.held(account) ? `${account} held off` : `${to} back`)
+      },
+      // After a limit: another login that is free, if there is one.
+      switchAccount() {
+        const to = ACCOUNTS.pick()
+        if (!to || to === account) return false
+        switchTo(to, `${account} limited`)
+        return true
+      },
+      // Every login's limit is reached and none has lifted yet: no request against them.
       pausedFrame() {
-        if (!modelPaused()) return null
+        const blocked = ACCOUNTS.blocked()
+        if (!blocked) return null
         console.log(
-          `[jarvis] usage limit until ${new Date(modelPause.until).toLocaleTimeString()}` +
+          `[jarvis] usage limit until ${new Date(blocked.until).toLocaleTimeString()}` +
+            (ACCOUNTS.switchable() ? ' on every login' : '') +
             (FALLBACK ? ' — question goes to the fallback' : ' — question not sent'),
         )
-        return { type: 'error', kind: 'rate', resetAt: modelPause.clock, message: rateLimitMessage(modelPause.clock, LANG) }
+        return { type: 'error', kind: 'rate', resetAt: blocked.clock, message: limitMessage(blocked.clock, true) }
       },
     },
     fallback: FALLBACK && {
@@ -2419,6 +2511,8 @@ wss.on('connection', (socket, req) => {
         if (TRACE) console.log(`[jarvis] ask ${id} superseded while waiting — not sent`)
         const recv = turn.item?.lat?.recv
         console.log(`[latency] ask=${id} superseded effort=- queue=${ms(recv, performance.now())}ms total=${ms(recv, performance.now())}ms`)
+      } else if (event === 'account-switch') {
+        console.log(`[jarvis] ask ${id} asked again on login ${account}`)
       } else if (event === 'fallback') {
         console.log(`[jarvis] ask ${id} → fallback channel (${FALLBACK?.model})`)
       } else if (event === 'fallback-skipped' || event === 'fallback-failed') {

@@ -180,3 +180,15 @@ test('refusals are logged with the host that was refused, without secrets', asyn
   await get({ port: plain.port, host: 'logged.example' })
   assert.match(plain.log(), /refused http request for host logged\.example/)
 })
+
+test('a backup login directory is taken by label, and a missing one turns the backup off', async () => {
+  assert.doesNotMatch(plain.log(), /claude logins|JARVIS_CLAUDE_BACKUP_DIR/)
+  const backupDir = mkdtempSync(join(home, 'login-backup-'))
+  const withBackup = await boot({ JARVIS_CLAUDE_BACKUP_DIR: backupDir })
+  assert.match(withBackup.log(), /claude logins: primary, backup/)
+  const missing = await boot({ JARVIS_CLAUDE_BACKUP_DIR: join(home, 'no-such-login') })
+  assert.match(missing.log(), /JARVIS_CLAUDE_BACKUP_DIR is not a directory — backup login off/)
+  assert.doesNotMatch(missing.log(), /claude logins/)
+  // The directory is the user's: neither path reaches the log.
+  for (const b of [withBackup, missing]) assert.doesNotMatch(b.log(), /login-backup-|no-such-login/)
+})

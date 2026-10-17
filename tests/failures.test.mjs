@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { describeFailure, isRateLimit, rateLimitMessage, rateLimitReset, turnFailed } from '../bridge/failures.mjs'
+import { allLoginsLimitedMessage, describeFailure, isAuthFailure, isRateLimit, rateLimitMessage, rateLimitReset, turnFailed } from '../bridge/failures.mjs'
 
 test('an API error reported as a "successful" result is a failure', () => {
   // The shape that used to reach the page as an ordinary, unspoken answer.
@@ -47,6 +47,47 @@ test('the usage limit is told apart from other failures, in every shape it arriv
   assert.equal(isRateLimit({ subtype: 'success', is_error: true, result: 'API Error: 429 rate_limit_error' }, null), true)
   assert.equal(isRateLimit({ subtype: 'success', is_error: true, api_error_status: 403 }, null), false)
   assert.equal(isRateLimit({ subtype: 'error_during_execution' }, null), false)
+})
+
+test('a refused login is told apart from the limit and from other failures', () => {
+  assert.equal(isAuthFailure({ api_error_status: 401 }, null), true)
+  assert.equal(isAuthFailure({ subtype: 'success', is_error: true }, 'authentication_failed'), true)
+  assert.equal(isAuthFailure({ subtype: 'success', is_error: true }, 'oauth_org_not_allowed'), true)
+  assert.equal(isAuthFailure({ result: 'API Error: 401 {"type":"authentication_error"}' }, null), true)
+  assert.equal(isAuthFailure({ api_error_status: 429, result: 'resets 2am' }, 'rate_limit'), false)
+  assert.equal(isAuthFailure({ api_error_status: 403 }, null), false)
+  assert.equal(isAuthFailure({ result: 'API Error: 4010' }, null), false)
+  assert.equal(isAuthFailure({ subtype: 'error_during_execution' }, null), false)
+})
+
+test('only the limit moves a turn to the other login, and only a refused login sets one aside', () => {
+  // What a login switch keys on: 429 for the limit, 401 for a refused login.
+  // Everything else is the same for both logins, so neither is it.
+  const cases = [
+    [{ api_error_status: 429 }, null, 'rate'],
+    [{ subtype: 'success', is_error: true }, 'rate_limit', 'rate'],
+    [{ api_error_status: 401 }, null, 'auth'],
+    [{ subtype: 'success', is_error: true }, 'authentication_failed', 'auth'],
+    [{ api_error_status: 403, result: 'Request not allowed' }, null, null],
+    [{ api_error_status: 529 }, 'overloaded', null],
+    [{ api_error_status: 500 }, 'server_error', null],
+    [{ subtype: 'success', is_error: true, result: 'API Error: Connection error. ECONNRESET' }, null, null],
+    [{ subtype: 'success', is_error: true, result: 'fetch failed: ETIMEDOUT' }, null, null],
+    [{ subtype: 'error_max_turns' }, null, null],
+  ]
+  for (const [result, kind, want] of cases) {
+    const got = isRateLimit(result, kind) ? 'rate' : isAuthFailure(result, kind) ? 'auth' : null
+    assert.equal(got, want, JSON.stringify([result, kind]))
+  }
+  // And the user still hears the right cause for the ones that do not switch.
+  assert.match(describeFailure({ api_error_status: 403 }, null), /VPN/)
+  assert.match(describeFailure({ subtype: 'success', is_error: true, result: 'API Error: Connection error. ECONNRESET' }, null), /интернет|VPN|сервер/i)
+})
+
+test('both logins held off: one plain sentence in Russian, with the time when it is known', () => {
+  assert.equal(allLoginsLimitedMessage('2:00'), 'Оба аккаунта Claude недоступны до 2:00. Команды без модели работают.')
+  assert.equal(allLoginsLimitedMessage(null), 'Оба аккаунта Claude недоступны. Попробуйте чуть позже.')
+  assert.match(allLoginsLimitedMessage('2:00', 'en'), /^Both Claude accounts are unavailable until 2:00\./)
 })
 
 test('the time the limit lifts is read from the result, as the next time that clock comes round', () => {

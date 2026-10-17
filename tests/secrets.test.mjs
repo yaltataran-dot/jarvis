@@ -263,7 +263,8 @@ test('on this machine, called the way the bridge calls it, the real user decides
 test('the bridge is wired to all of it', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8')
   assert.match(server, /const AGENT_ENV = agentEnv\(process\.env\)/)
-  assert.match(server, /env: \{ \.\.\.AGENT_ENV, ENABLE_TOOL_SEARCH: 'false' \}/)
+  // Built from AGENT_ENV alone; the login adds only its config directory (accounts.mjs).
+  assert.match(server, /env: ACCOUNTS\.env\(account, \{ \.\.\.AGENT_ENV, ENABLE_TOOL_SEARCH: 'false' \}\)/)
   assert.match(server, /writesAllowed\(process\.env, \{ uid: process\.getuid\?\.\(\), platform: process\.platform \}\)/)
   assert.match(server, /WRITES\.refused === 'root'/)
   assert.match(server, /WRITES\.refused === 'unknown-uid'/)

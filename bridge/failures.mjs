@@ -47,6 +47,17 @@ export function isRateLimit(result, assistantError) {
   return result?.api_error_status === 429 || assistantError === 'rate_limit' || /API Error:\s*429/.test(text)
 }
 
+/** Did the login itself fail (HTTP 401 or an auth error kind), rather than the request? */
+export function isAuthFailure(result, assistantError) {
+  const text = String(result?.result ?? '')
+  return (
+    result?.api_error_status === 401 ||
+    assistantError === 'authentication_failed' ||
+    assistantError === 'oauth_org_not_allowed' ||
+    /API Error:\s*401\b/.test(text)
+  )
+}
+
 /**
  * When the limit lifts, as Claude Code writes it into the result:
  * "You've hit your session limit · resets 10:50pm (Europe/Moscow)".
@@ -124,6 +135,18 @@ export function rateLimitMessage(clock, lang = 'ru') {
   return clock
     ? `Лимит запросов Claude исчерпан до ${clock}. Команды без модели работают.`
     : RU.rate
+}
+
+/** Both Claude logins held off (accounts.mjs): the same sentence, saying it is both. */
+export function allLoginsLimitedMessage(clock, lang = 'ru') {
+  if (lang === 'en') {
+    return clock
+      ? `Both Claude accounts are unavailable until ${clock}. Commands that need no model still work.`
+      : 'Both Claude accounts are unavailable. Try again a little later.'
+  }
+  return clock
+    ? `Оба аккаунта Claude недоступны до ${clock}. Команды без модели работают.`
+    : 'Оба аккаунта Claude недоступны. Попробуйте чуть позже.'
 }
 
 /**
