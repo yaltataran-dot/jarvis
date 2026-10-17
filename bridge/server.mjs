@@ -26,10 +26,22 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
-import { probeUrl, renderPage } from './page.mjs'
+import { renderPage } from './page.mjs'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
 import { effortFor } from './effort.mjs'
-import { describeFailure, isRateLimit, rateLimitMessage, rateLimitReset, turnFailed } from './failures.mjs'
+import { asidesFrom, createAsideLedger, createBlockJoin, formatAsides, withAside } from './turnText.mjs'
+import { asksToSee } from './visual.mjs'
+import {
+  describeFailure,
+  fallbackDownMessage,
+  isRateLimit,
+  limitMidTurnMessage,
+  rateLimitMessage,
+  rateLimitReset,
+  turnFailed,
+} from './failures.mjs'
+import { createTurns } from './turns.mjs'
+import { createBudget, createFallback, fallbackConfig, fileStore } from './fallback.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
 import { createYandexMusic, musicAction } from './yandexMusic.mjs'
@@ -435,8 +447,11 @@ const BASE_PROMPT = `You are JARVIS. You are speaking out loud to one person.
 
 LENGTH. Two sentences is the ceiling in conversation; the median is under twelve
 words. Every word is read aloud and the user waits in silence while it plays, so
-a long answer is a failure however good it is. Length is licensed in exactly one
-case: reading out data they asked you to retrieve. Conversation never licenses it.
+a long answer is a failure however good it is. Length is licensed in two cases:
+reading out data they asked you to retrieve, and an explanation they explicitly
+asked to have in detail ("in detail", "explain properly", "tell me everything").
+Then say as much as the subject needs and no more, still as plain speech, and
+return to short lines on the next turn. Nothing else licenses it.
 
 URGENCY IS SIGNALLED BY DELETING WORDS, NOT ADDING THEM. As a situation worsens
 your lines get shorter, not louder. A full clause becomes a clause, becomes a
@@ -469,6 +484,24 @@ queries. A follow-up like "and tomorrow?" or "the second one" refers to what was
 just said — resolve it from context instead of asking what they mean. Never
 recap the previous answer. Vary how lines open; two answers in a row that start
 the same way sound mechanical.
+- "Simpler" means the same content in plainer words; "shorter" means your last
+  answer cut down, not a new one; "compare" means the options just discussed;
+  "the second one" means the second thing you yourself offered.
+- "No, I meant something else" means your reading was wrong: take the other
+  reading that fits, or, if there is none, ask one short question about what
+  they meant. Never defend the first reading.
+- "Back to the previous topic" means the subject before the current one.
+- Ask one short clarifying question only when the reference could genuinely
+  mean two different things, or the answer depends on a fact about them they
+  have not given. Never ask about what is plain from the conversation.
+- A note in parentheses marked as a service note is for you, not them: it says
+  what the interface answered by itself. Treat it as part of the conversation;
+  never read it out or mention it.
+
+HONESTY. Keep what you know apart from what you assume. A guess is said as a
+guess, in a word or two ("probably", "if I have it right"), never as a fact.
+Never attribute to them a fact, a plan, a budget or a preference they did not
+state. When something cannot be known from here, say so plainly in one line.
 
 NEVER.
 - No filler words at all: no um, well, so, okay, right, let me check, one moment.
@@ -521,6 +554,10 @@ The blades — the ONLY surface:
   the spoken answer before the \`display\` or \`blade\` call, never after it:
   composing a panel takes seconds, and they wait in silence for every one of
   them. A spoken answer they did not ask to see needs no blade at all.
+- Put nothing on screen unless they asked to see it in this turn: "show me",
+  "on screen", a table, a chart. The weather, a fact, a figure or a price they
+  asked about is spoken and nothing more, even when you searched for it. A
+  panel you compose unasked is refused and only costs them the wait.
 
 The interface itself:
 - The interface is yours as well. \`ui_theme\` retints it, \`ui_reactor\` reshapes
@@ -667,7 +704,24 @@ const RUSSIAN = `
 вслух его не называй.
 
 - Коротко: одна-две фразы, чаще всего меньше двенадцати слов. Длиннее — только
-  когда зачитываешь данные, о которых попросили.
+  когда зачитываешь данные, о которых попросили, или когда прямо попросили
+  объяснить подробно («подробнее», «объясни нормально», «расскажи всё»): тогда
+  столько, сколько нужно теме, и снова коротко со следующей реплики.
+- «Проще» — то же самое простыми словами. «Короче» — сократи свой прошлый ответ.
+  «Сравни» — сравни то, о чём только что говорили. «Второй вариант» — второй из
+  тех, что ты сам предложил. «Нет, я другое имел в виду» — твоё понимание
+  неверно: возьми другое подходящее или коротко спроси, что именно. «Вернись к
+  предыдущей теме» — к теме до нынешней.
+- «Мой проект», «проект» без названия — проект в папке, с которой работают
+  инструменты pc_*, то есть сам этот голосовой помощник. Чего о нём не знаешь,
+  не выдумывай: посмотри через pc_* или спроси.
+- Уточняющий вопрос — один и короткий, и только когда ссылка правда допускает
+  два смысла или ответ зависит от того, чего пользователь не сказал.
+- Факт и предположение не смешивай: догадку называй догадкой («скорее всего»,
+  «если я правильно понял»). Не приписывай пользователю того, чего он не
+  говорил.
+- Служебная заметка в скобках — для тебя: что интерфейс ответил сам, без тебя.
+  Это часть разговора. Не озвучивай её и не упоминай.
 - Сразу к сути. Не повторяй и не пересказывай вопрос: на «Какая погода?» —
   «Плюс двенадцать, облачно», а не «Погода в Москве сейчас такая…». Не
   подытоживай свой прошлый ответ.
@@ -1444,6 +1498,39 @@ const RESULT_FAILURES =
         default: 'The turn ended without an answer.',
       }
 
+/**
+ * The fallback channel for the usage limit — see fallback.mjs. Null unless it
+ * is configured in full; one budget for the whole bridge, like the limit.
+ */
+const FALLBACK = (() => {
+  const conf = fallbackConfig()
+  if (!conf.ok) {
+    if (conf.reason) console.warn(`[jarvis] fallback channel off: ${conf.reason}`)
+    return null
+  }
+  const { cfg } = conf
+  const note =
+    LANG === 'ru'
+      ? '\n\nСейчас ты отвечаешь через резервный канал: инструментов нет — ни поиска, ни экрана, ни браузера, ни календаря, ни компьютера. Ничего не делай и не говори, что сделал. Если для ответа нужно действие или свежие данные, скажи одной фразой, что сейчас это недоступно.'
+      : '\n\nYou are answering through the fallback channel: you have no tools — no search, no screen, no browser, no calendar, no computer. Do nothing and never say you did. If the answer needs an action or fresh data, say in one line that it is unavailable right now.'
+  const channel = createFallback({
+    cfg,
+    system: SYSTEM_PROMPT + note,
+    budget: createBudget({ limitUsd: cfg.budgetUsd, store: fileStore(join(homedir(), '.jarvis', 'fallback-spend.json')) }),
+    log: (line) => console.log(line),
+  })
+  console.log(`[jarvis] fallback channel on: ${cfg.model}, up to $${cfg.budgetUsd} a day, text only`)
+  return channel
+})()
+
+/**
+ * The agent's environment: this process's, less the fallback's own settings.
+ * Its key is for fallback.mjs alone and has no business in Claude Code.
+ */
+const AGENT_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !k.startsWith('JARVIS_FALLBACK')),
+)
+
 wss.on('connection', (socket) => {
   console.log('[jarvis] client connected')
 
@@ -1453,13 +1540,27 @@ wss.on('connection', (socket) => {
     JSON.stringify({ type: 'ready', servers: Object.keys(MCP_SERVERS) }),
   )
 
-  /** Resolves the pending user message into the SDK's input generator. */
-  let deliver = null
   let closed = false
-  const inbox = []
+  /**
+   * The questions for the agent session now running, and the resolver of the
+   * one its input generator is waiting on. One per session: a session stuck
+   * on a stopped turn is replaced (turns.mjs), and the old generator has to
+   * end with it rather than take the next question.
+   */
+  let chan = { inbox: [], deliver: null, closed: false }
 
   /** The effort the session is on now, so it is only changed when it differs. */
   let sessionEffort = EFFORT
+
+  /** Whether this turn's question asked to see something — see visual.mjs. */
+  let turnMayShow = false
+
+  /**
+   * Which of the page's asides this session has been handed, by id. Per
+   * connection, because the socket is the session: a reconnect is a session
+   * that has heard none of them, and gets them all.
+   */
+  let asideLedger = createAsideLedger()
 
   /** Set this turn's effort before the question goes in. Never fatal. */
   const tuneFor = async (text) => {
@@ -1488,14 +1589,29 @@ wss.on('connection', (socket) => {
         ? '\n\n(Служебно, не озвучивать: браузер пользователя сейчас недоступен — chrome_* не вызывай, для фактов используй WebSearch.)'
         : "\n\n(System note, not to be spoken: the user's browser is unavailable right now — do not call chrome_*; use WebSearch for facts.)"
 
-  async function* userMessages() {
-    while (!closed) {
-      const text =
-        inbox.shift() ??
+  async function* userMessages(ch) {
+    while (!closed && !ch.closed) {
+      const item =
+        ch.inbox.shift() ??
         (await new Promise((resolve) => {
-          deliver = resolve
+          ch.deliver = resolve
         }))
-      if (closed || text == null) return
+      if (closed || ch.closed || item == null) return
+      // The question, and what the page answered by itself before it (aside.ts
+      // in the page). Effort is sorted on the question alone: the note is long
+      // and says nothing about how hard this one is.
+      const { text } = item
+      // Only the exchanges this session has not been handed yet. A turn that
+      // reached the model and then failed leaves the page holding its asides,
+      // and the page sends them again with the next question; the session
+      // already has them, so they are not said twice. New exchanges have new
+      // ids and always go in.
+      const fresh = asideLedger.fresh(item.asides ?? [])
+      if (item.asides?.length && fresh.length < item.asides.length) {
+        console.log(`[jarvis] asides: ${fresh.length} new, ${item.asides.length - fresh.length} already in the session`)
+      }
+      const context = fresh.length ? formatAsides(fresh, LANG) : null
+      turnMayShow = asksToSee(text)
       await tuneFor(text)
       const note = await browserNote()
       if (lat) {
@@ -1505,9 +1621,12 @@ wss.on('connection', (socket) => {
       // Tells the page how this question was sorted, so it can say a word at
       // once when a long wait is likely (App.tsx) instead of seconds later.
       sendTurn({ type: 'effort', level: ROUTE_EFFORT ? effortFor(text) : sessionEffort })
+      // Recorded at the hand-over and not before: a question superseded in the
+      // queue never gets here, so its asides are still fresh for the next one.
+      asideLedger.delivered(fresh)
       yield {
         type: 'user',
-        message: { role: 'user', content: text + note },
+        message: { role: 'user', content: withAside(text, context) + note },
         parent_tool_use_id: null,
       }
     }
@@ -1518,17 +1637,15 @@ wss.on('connection', (socket) => {
   }
 
   /**
-   * Which question the agent is currently answering.
+   * A frame for the question the agent is answering, tagged with its id.
    *
-   * The stream carries no notion of a turn, so without this the client cannot
-   * tell the tail of an abandoned answer from the start of the new one — it
-   * attaches a listener and receives whatever is on the socket. Echoing the
-   * id the client sent lets it ignore anything that is not its own, which is
-   * the only reliable fix: no amount of waiting on this side changes what a
-   * listener over there has already heard.
+   * The stream carries no notion of a turn, so without the tag the client
+   * cannot tell the tail of an abandoned answer from the start of the new one.
+   * Echoing the id the client sent lets it ignore anything that is not its
+   * own. turns.mjs owns which question that is, and drops frames that belong
+   * to none — an untagged frame is read by whichever listener is attached.
    */
-  let answering = null
-  const sendTurn = (msg) => send({ ...msg, ask: answering })
+  const sendTurn = (msg) => turns.frame(msg)
 
   /**
    * Asking the browser for something and waiting for the answer.
@@ -1580,65 +1697,19 @@ wss.on('connection', (socket) => {
    */
   const seenTools = new Set()
   const heldTools = new Map()
+  /** Closes each text block of an answer with a space — see turnText.mjs. */
+  const blockJoin = createBlockJoin()
 
   /**
-   * Resolves when the turn in flight has actually finished.
-   *
-   * Waiting on session.interrupt() alone is not enough. It resolves when the
-   * agent has been *told* to stop, not when it has, so the last tokens of the
-   * abandoned answer are still on their way — and since nothing on the wire
-   * identifies which question a delta belongs to, they land on the next turn's
-   * listener. Measured: ask for ALPHA, interrupt, ask for BRAVO, and BRAVO's
-   * answer arrives as "ALPHA\nBRAVO".
-   *
-   * The SDK emits exactly one `result` per turn, so that is the boundary worth
-   * waiting for. Raced against a timeout because a turn that never reports one
-   * must not wedge the conversation for ever — a stray word is a blemish, a
-   * deadlocked assistant is not.
+   * How long a stopped turn may take to report its `result` before the session
+   * is replaced. Waiting on session.interrupt() alone is not enough — it
+   * resolves when the agent has been told to stop, not when it has — and while
+   * the session is still starting up interrupt() does not stop the turn at all.
+   * Measured both ways: the abandoned answer's tail landed on the next
+   * question. So the next question waits for the result, and a turn that never
+   * reports one costs a session restart, never a wedged conversation.
    */
-  let settling = Promise.resolve()
-  let finishTurn = null
-
-  const turnFinished = () =>
-    new Promise((resolve) => {
-      finishTurn = resolve
-    })
-
-  /**
-   * A brief pause so the abandoned turn's frames are tagged with the OLD id
-   * before the new one is adopted. Short, because correctness now comes from
-   * the tag rather than from the wait — this only has to cover the gap, not
-   * outlast the whole turn.
-   */
-  const SETTLE_CAP_MS = 400
-
-  /**
-   * One question in the agent at a time.
-   *
-   * The settle above assumes interrupt() stops the turn. It does not while the
-   * session is still starting up — measured: ask, interrupt a second later, ask
-   * again, and the first answer ran to completion and arrived tagged with the
-   * second question's id, so the page took it for the new answer and dropped
-   * the real one. A new question is therefore handed over only once the
-   * previous turn's `result` is in, which keeps every frame tagged with the
-   * question that produced it. Capped so a turn that never reports cannot
-   * wedge the conversation.
-   */
-  let turnOpen = false
-  /** Interrupted before it was running — interrupt again once it is. */
-  let turnAbandoned = false
-  const idleWaiters = []
   const TURN_WAIT_CAP_MS = 30_000
-  const turnIdle = () =>
-    turnOpen
-      ? Promise.race([
-          new Promise((r) => idleWaiters.push(r)),
-          new Promise((r) => setTimeout(r, TURN_WAIT_CAP_MS)),
-        ])
-      : Promise.resolve()
-  /** Deliveries run in arrival order; a question superseded while it waited is dropped. */
-  let delivery = Promise.resolve()
-  let newestAsk = 0
 
   /**
    * The turn in flight, for the log: when it went in, the tools it called, and
@@ -1648,12 +1719,6 @@ wss.on('connection', (socket) => {
   let turnStartedAt = 0
   let turnTools = []
   let turnApiError = null
-  /**
-   * The page interrupted this turn — barge-in, "стоп", a newer question. Such
-   * a turn ends as error_during_execution, which is the expected shape of a
-   * stop and not a fault; logged as a failure it buried the real ones.
-   */
-  let turnInterrupted = false
   const turnSeconds = () => (turnStartedAt ? ((Date.now() - turnStartedAt) / 1000).toFixed(1) : '?')
 
   /**
@@ -1705,24 +1770,40 @@ wss.on('connection', (socket) => {
     if (!failed) sendTurn({ type: 'tool', name })
   }
 
-  const session = query({
-    prompt: userMessages(),
+  /** The agent session; replaced, with its history resumed, when a turn sticks. */
+  let session = null
+  /** Which session's stream is the live one; frames from an older one are dropped. */
+  let sessionGen = 0
+  /** From the init message, so a replacement session keeps the conversation. */
+  let sessionId = null
+
+  const openSession = (resume) => query({
+    prompt: userMessages(chan),
     options: {
+      ...(resume ? { resume } : {}),
       // Everything Claude Code has configured, plus the HUD as an in-process
       // server. The HUD's handler closes over this socket, so a `display` call
       // lands on screen directly — which is also why this object is built per
       // connection rather than once.
       mcpServers: {
         ...MCP_SERVERS,
+        // Drawn only for a turn still wanted: a panel from a stopped turn
+        // would land in the middle of the next one.
         jarvis: displayServer(
-          (panel) => send({ type: 'panel', panel }),
-          (blade) => send({ type: 'blade', blade }),
+          (panel) => turns.live() && send({ type: 'panel', panel }),
+          (blade) => turns.live() && send({ type: 'blade', blade }),
+          {
+            // A composed panel only when this turn's question asked to see
+            // something — see visual.mjs.
+            mayShow: () => turnMayShow,
+            onRefused: (what) => console.log(`[jarvis] panel refused (${what}): not asked to see`),
+          },
         ),
         // The interface controls, on the same socket. A separate key because
         // MCP tool names are `mcp__<key>__<tool>` and one key can only carry
         // one server; the underscore in it is why decideTool and announceTool
         // both name `jarvis_ui` explicitly.
-        jarvis_ui: uiServer((op, args) => send({ type: 'ui', op, args })),
+        jarvis_ui: uiServer((op, args) => turns.live() && send({ type: 'ui', op, args })),
         // The user's own Chrome, over the extension's native-host socket. It
         // holds no per-connection state, but it is built here with the rest so
         // the write gate is read once, at the same point as everything else.
@@ -1773,7 +1854,7 @@ wss.on('connection', (socket) => {
       // whole extra round trip on the first lookup of every session, measured
       // in the 20 s it took to answer "what's the weather". This set of tools
       // is small enough that deferring them saves nothing.
-      env: { ...process.env, ENABLE_TOOL_SEARCH: 'false' },
+      env: { ...AGENT_ENV, ENABLE_TOOL_SEARCH: 'false' },
       maxTurns: 24,
       permissionMode: 'default',
       // Without this the SDK only emits whole assistant messages, and JARVIS
@@ -1807,21 +1888,28 @@ wss.on('connection', (socket) => {
     },
   })
 
-  // Bring the agent up now, while the page is still on its start-up screen,
-  // rather than on the first question. Measured on a fresh connection: the
-  // first question spent 1.1 s waiting for the session to start before it
-  // could even be handed over. The initialize handshake is what it waited for.
-  {
+  /** A new agent session, live from now on, resuming `resume` when given. */
+  const startSession = (resume = null) => {
+    const gen = ++sessionGen
+    const s = openSession(resume)
+    session = s
+    // Bring the agent up now, while the page is still on its start-up screen,
+    // rather than on the first question. Measured on a fresh connection: the
+    // first question spent 1.1 s waiting for the session to start before it
+    // could even be handed over. The initialize handshake is what it waited for.
     const t0 = performance.now()
-    void Promise.resolve(session.initializationResult?.())
+    void Promise.resolve(s.initializationResult?.())
       .then(() => console.log(`[jarvis] agent session ready in ${Math.round(performance.now() - t0)} ms`))
       .catch((err) => console.warn(`[jarvis] agent session warm-up failed: ${err?.message ?? err}`))
+    void pump(s, gen)
   }
 
-  // Pump the session's output stream to the browser for as long as it lives.
-  ;(async () => {
+  // Pump a session's output stream to the browser for as long as it is the live one.
+  async function pump(s, gen) {
     try {
-      for await (const msg of session) {
+      for await (const msg of s) {
+        // A replaced session's stream: none of it is for the page any more.
+        if (gen !== sessionGen) break
         if (process.env.JARVIS_DEBUG === '1') {
           console.log('[msg]', msg.type, msg.event?.type ?? '')
         }
@@ -1833,11 +1921,9 @@ wss.on('connection', (socket) => {
           // carries no deltas either. Turn includePartialMessages off and
           // JARVIS goes completely mute.
           case 'stream_event': {
-            // The abandoned turn is running now, so this time the interrupt lands.
-            if (turnAbandoned) {
-              turnAbandoned = false
-              void Promise.resolve(session.interrupt?.()).catch(() => {})
-            }
+            // A turn stopped before it was running is running now, so this
+            // time the interrupt lands — see turns.mjs.
+            turns.streaming()
             const ev = msg.event
             if (lat && !lat.first) lat.first = performance.now()
             if (
@@ -1848,6 +1934,10 @@ wss.on('connection', (socket) => {
               if (lat && !lat.text) lat.text = performance.now()
               sendTurn({ type: 'text', delta: ev.delta.text })
             }
+            // A text block that ends before a tool: its last sentence goes now,
+            // not after the tool has run — see turnText.mjs.
+            const gap = blockJoin(ev)
+            if (gap) sendTurn({ type: 'text', delta: gap })
             if (
               ev?.type === 'content_block_start' &&
               ev.content_block?.type === 'tool_use'
@@ -1856,6 +1946,9 @@ wss.on('connection', (socket) => {
                 lat.tools.set(ev.content_block.id, performance.now())
                 lat.toolCount++
               }
+              // From here the turn may have changed something, so it is not
+              // handed to the fallback if the limit cuts it off.
+              turns.acted()
               announceTool(ev.content_block.id, ev.content_block.name)
             }
             break
@@ -1872,6 +1965,7 @@ wss.on('connection', (socket) => {
             // than partial events. Deduped against the stream_event path.
             for (const block of msg.content ?? msg.message?.content ?? []) {
               if (block.type === 'tool_use') {
+                turns.acted()
                 announceTool(block.id, block.name)
               }
             }
@@ -1897,7 +1991,7 @@ wss.on('connection', (socket) => {
             break
           }
 
-          case 'result':
+          case 'result': {
             // A result is not automatically a success. The error subtypes
             // carry no `result` field at all, so reporting them as 'done' with
             // empty text is indistinguishable from a turn that simply had
@@ -1909,22 +2003,35 @@ wss.on('connection', (socket) => {
             // 'success' with is_error set and the error as the result text,
             // never streamed. Passed on as 'done' it was an answer nobody heard.
             // See failures.mjs.
+            //
+            // The frame is handed to turns.mjs rather than sent: it decides
+            // whether the page still wants it, and whether the limit's frame
+            // becomes a question for the fallback instead.
+            //
+            // The page stopped this turn — barge-in, "стоп", a newer question.
+            // Such a turn ends as error_during_execution, which is the
+            // expected shape of a stop and not a fault; logged as a failure
+            // it buried the real ones.
+            const turnInterrupted = turns.interrupted()
+            let outcome
             if (!turnFailed(msg, turnApiError)) {
               console.log(
                 `[jarvis] turn ok in ${turnSeconds()} s` +
                   (turnTools.length ? ` · tools: ${turnTools.join(', ')}` : ''),
               )
-              sendTurn({
-                type: 'done',
-                text: msg.result ?? '',
-                costUsd: msg.total_cost_usd ?? null,
-              })
+              outcome = {
+                kind: 'ok',
+                frame: { type: 'done', text: msg.result ?? '', costUsd: msg.total_cost_usd ?? null },
+              }
             } else if (turnInterrupted && msg.subtype === 'error_during_execution' && !turnApiError) {
               console.log(
                 `[jarvis] turn interrupted after ${turnSeconds()} s` +
                   (turnTools.length ? ` · tools: ${turnTools.join(', ')}` : ''),
               )
-              sendTurn({ type: 'error', message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default })
+              outcome = {
+                kind: 'failed',
+                frame: { type: 'error', message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default },
+              }
             } else if (isRateLimit(msg, turnApiError)) {
               // The limit: hold the model off until it lifts — see modelPause.
               const reset = rateLimitReset(msg)
@@ -1935,7 +2042,10 @@ wss.on('connection', (socket) => {
                 `[jarvis] turn failed after ${turnSeconds()} s: usage limit (429)` +
                   ` · model paused until ${new Date(modelPause.until).toLocaleTimeString()}`,
               )
-              sendTurn({ type: 'error', kind: 'rate', resetAt: modelPause.clock, message: rateLimitMessage(modelPause.clock, LANG) })
+              outcome = {
+                kind: 'rate',
+                frame: { type: 'error', kind: 'rate', resetAt: modelPause.clock, message: rateLimitMessage(modelPause.clock, LANG) },
+              }
             } else {
               const described = describeFailure(msg, turnApiError, LANG)
               console.error(
@@ -1950,16 +2060,19 @@ wss.on('connection', (socket) => {
               // The specific cause when one is known; otherwise the subtype's
               // own sentence, as before.
               const generic = describeFailure({ subtype: 'unknown' }, null, LANG)
-              sendTurn({
-                type: 'error',
-                // A known cause outside JARVIS — the network, the VPN, the
-                // service — rather than a fault of his own.
-                ...(described !== generic ? { kind: 'service' } : {}),
-                message:
-                  described !== generic
-                    ? described
-                    : (RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default),
-              })
+              outcome = {
+                kind: 'failed',
+                frame: {
+                  type: 'error',
+                  // A known cause outside JARVIS — the network, the VPN, the
+                  // service — rather than a fault of his own.
+                  ...(described !== generic ? { kind: 'service' } : {}),
+                  message:
+                    described !== generic
+                      ? described
+                      : (RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default),
+                },
+              }
             }
             latReport(
               !turnFailed(msg, turnApiError) ? 'ok' : turnInterrupted ? 'interrupted' : `failed:${msg.subtype}`,
@@ -1967,19 +2080,16 @@ wss.on('connection', (socket) => {
             turnStartedAt = 0
             turnTools = []
             turnApiError = null
-            turnInterrupted = false
-            // Whatever was waiting on this turn to finish can go now. This is
-            // the only place a turn is genuinely over.
-            finishTurn?.()
-            finishTurn = null
-            turnOpen = false
-            turnAbandoned = false
-            for (const release of idleWaiters.splice(0)) release()
             // One turn's tool ids are never referred to again, and these
             // otherwise grow for as long as the socket is open.
             seenTools.clear()
             heldTools.clear()
+            // Last, because it may hand the next question over at once, and
+            // that turn's state is set fresh in primary.hand below. This is
+            // the only place a primary turn is genuinely over.
+            turns.primaryEnded(outcome)
             break
+          }
 
           case 'system':
             // Claude Code retrying a failed API call. Silent before, so a turn
@@ -1994,6 +2104,7 @@ wss.on('connection', (socket) => {
               break
             }
             if (msg.subtype === 'init') {
+              if (typeof msg.session_id === 'string') sessionId = msg.session_id
               // Servers report 'pending' until first use — they connect
               // lazily — so only drop the ones that are actually unusable.
               const usable = (msg.mcp_servers ?? [])
@@ -2005,7 +2116,12 @@ wss.on('connection', (socket) => {
             break
         }
       }
+      // The live session's stream ended without a word: the same as a failure,
+      // or the turn on the floor would wait on a result that cannot come.
+      if (gen === sessionGen && !closed) throw new Error('the agent session ended')
     } catch (err) {
+      // A replaced session dying is the expected end of it.
+      if (gen !== sessionGen) return
       console.error('[jarvis] session error:', err)
       send({ type: 'error', message: String(err?.message ?? err) })
       // The stream is finished either way — nothing will ever be read from it
@@ -2013,11 +2129,109 @@ wss.on('connection', (socket) => {
       // a working bridge, and every later question would hang for ever waiting
       // on a pump that has already stopped. Close it so it reconnects.
       closed = true
-      deliver?.(null)
-      session.close?.()
+      turns.close()
+      chan.closed = true
+      chan.deliver?.(null)
+      s.close?.()
       socket.close()
     }
-  })()
+  }
+
+  /**
+   * The turn queue — see turns.mjs. `primary` is this connection's agent
+   * session; the fallback, when there is one, is shared by the whole bridge.
+   */
+  const turns = createTurns({
+    send,
+    say: {
+      fallbackDown: (kind) => fallbackDownMessage(kind, LANG),
+      limitMidTurn: () => limitMidTurnMessage(LANG),
+    },
+    waitCapMs: TURN_WAIT_CAP_MS,
+    primary: {
+      hand(turn) {
+        const { text, asides, lat: received } = turn.item
+        lat = received
+        lat.start = performance.now()
+        turnStartedAt = Date.now()
+        turnTools = []
+        turnApiError = null
+        if (chan.deliver) {
+          const resolve = chan.deliver
+          chan.deliver = null
+          resolve({ text, asides })
+        } else {
+          chan.inbox.push({ text, asides })
+        }
+      },
+      interrupt: () => session?.interrupt?.(),
+      /**
+       * The stopped turn never ended. Its session is closed and its stream
+       * ignored from here on (sessionGen), and a new session picks the
+       * conversation up from the transcript, so nothing of the stuck turn can
+       * reach the next question.
+       */
+      restart() {
+        console.warn(`[jarvis] turn still running ${TURN_WAIT_CAP_MS / 1000} s after it was stopped — restarting the agent session`)
+        const old = session
+        chan.closed = true
+        chan.deliver?.(null)
+        chan = { inbox: [], deliver: null, closed: false }
+        sessionGen++
+        try {
+          old?.close?.()
+        } catch {
+          // Already gone.
+        }
+        latReport('stuck')
+        turnStartedAt = 0
+        turnTools = []
+        turnApiError = null
+        seenTools.clear()
+        heldTools.clear()
+        sessionEffort = EFFORT
+        // A fresh session has heard none of the asides; a resumed one has.
+        if (!sessionId) asideLedger = createAsideLedger()
+        startSession(sessionId)
+      },
+      // The usage limit is reached and has not lifted yet: no request against it.
+      pausedFrame() {
+        if (!modelPaused()) return null
+        console.log(
+          `[jarvis] usage limit until ${new Date(modelPause.until).toLocaleTimeString()}` +
+            (FALLBACK ? ' — question goes to the fallback' : ' — question not sent'),
+        )
+        return { type: 'error', kind: 'rate', resetAt: modelPause.clock, message: rateLimitMessage(modelPause.clock, LANG) }
+      },
+    },
+    fallback: FALLBACK && {
+      ready: () => FALLBACK.ready(),
+      // The fallback has no session, so it is given every aside the page sent.
+      answer: ({ item, ...rest }) =>
+        FALLBACK.answer({
+          prompt: withAside(item.text, item.asides?.length ? formatAsides(item.asides, LANG) : null),
+          ...rest,
+        }),
+    },
+    log(event, turn, detail) {
+      const id = String(turn?.id).slice(0, 12)
+      if (event === 'superseded') {
+        if (TRACE) console.log(`[jarvis] ask ${id} superseded while waiting — not sent`)
+        const recv = turn.item?.lat?.recv
+        console.log(`[latency] ask=${id} superseded effort=- queue=${ms(recv, performance.now())}ms total=${ms(recv, performance.now())}ms`)
+      } else if (event === 'fallback') {
+        console.log(`[jarvis] ask ${id} → fallback channel (${FALLBACK?.model})`)
+      } else if (event === 'fallback-skipped' || event === 'fallback-failed') {
+        console.warn(`[jarvis] ask ${id}: fallback ${event === 'fallback-skipped' ? 'not used' : 'failed'} (${detail})`)
+      } else if (event === 'stuck') {
+        console.warn(`[jarvis] ask ${id} did not end after it was stopped`)
+      } else if (event === 'stale-result' && TRACE) {
+        console.log('[jarvis] result with no turn on the floor — dropped')
+      }
+    },
+  })
+
+  startSession()
 
   socket.on('message', (raw) => {
     let msg
@@ -2058,61 +2272,12 @@ wss.on('connection', (socket) => {
     }
 
     if (msg.type === 'ask' && typeof msg.text === 'string') {
-      /**
-       * Queued behind any interrupt that is still settling.
-       *
-       * A barge-in is two messages in quick succession — interrupt, then the
-       * new question — and session.interrupt() is asynchronous. Delivering the
-       * question the instant it arrives means the agent can still be winding
-       * down the previous turn, so its last tokens are emitted after the new
-       * one has begun and land on the new turn's listener. Measured: ask "one",
-       * interrupt, ask "two", and the answer to "two" comes back as "One."
-       *
-       * Waiting costs nothing when nothing is interrupting — the chain is an
-       * already-resolved promise — and removes the cross-talk when there is.
-       */
-      const text = msg.text
+      // Waits for the floor in turns.mjs: the turn before it is stopped and
+      // has to report its end first, or its last tokens land on this one.
+      // Measured before that wait existed: ask "one", interrupt, ask "two",
+      // and the answer to "two" came back as "One."
       const id = typeof msg.id === 'string' ? msg.id : null
-      // The usage limit is reached and has not lifted yet: answer at once,
-      // without another request against it. Nothing is queued, so a newer
-      // question still supersedes this one as usual.
-      if (modelPaused()) {
-        console.log(`[jarvis] ask ${String(id).slice(0, 12)} not sent: usage limit until ${new Date(modelPause.until).toLocaleTimeString()}`)
-        console.log(`[latency] ask=${String(id).slice(0, 12)} limit-paused effort=- total=0ms`)
-        send({ type: 'error', kind: 'rate', resetAt: modelPause.clock, message: rateLimitMessage(modelPause.clock, LANG), ask: id })
-        return
-      }
-      const mine = ++newestAsk
-      const received = latNew(id)
-      delivery = delivery
-        .then(() => settling)
-        .then(turnIdle)
-        .then(() => {
-          // The page has moved on to a newer question and no longer listens
-          // for this one; running it would only pay for an unheard answer.
-          if (mine !== newestAsk) {
-            if (TRACE) console.log(`[jarvis] ask ${String(id).slice(0, 12)} superseded while waiting — not sent`)
-            console.log(
-              `[latency] ask=${String(id).slice(0, 12)} superseded effort=- queue=${ms(received.recv, performance.now())}ms total=${ms(received.recv, performance.now())}ms`,
-            )
-            return
-          }
-          answering = id
-          lat = received
-          lat.start = performance.now()
-          turnOpen = true
-          turnStartedAt = Date.now()
-          turnTools = []
-          turnApiError = null
-          turnInterrupted = false
-          if (deliver) {
-            const resolve = deliver
-            deliver = null
-            resolve(text)
-          } else {
-            inbox.push(text)
-          }
-        })
+      turns.ask(id, { text: msg.text, asides: asidesFrom(msg.asides), lat: latNew(id) })
     }
 
     if (msg.type === 'reply' && typeof msg.id === 'string') {
@@ -2126,20 +2291,9 @@ wss.on('connection', (socket) => {
 
     if (msg.type === 'interrupt') {
       if (TRACE) console.log('[jarvis] interrupt received')
-      if (turnOpen) {
-        turnAbandoned = true
-        turnInterrupted = true
-      }
-      // Held so the next question can wait for it rather than racing it.
-      const stopped = turnFinished()
-      settling = Promise.resolve(session.interrupt?.())
-        .catch(() => {})
-        .then(() =>
-          Promise.race([
-            stopped,
-            new Promise((r) => setTimeout(r, SETTLE_CAP_MS)),
-          ]),
-        )
+      // Stops the turn on the floor, primary or fallback, and drops any
+      // question still waiting behind it.
+      turns.interrupt()
     }
   })
 
@@ -2148,7 +2302,10 @@ wss.on('connection', (socket) => {
   socket.on('close', (code) => {
     console.log(`[jarvis] client disconnected (code ${code})`)
     closed = true
-    deliver?.(null)
-    session.close?.()
+    // Aborts a fallback answer in flight: nobody is left to hear it.
+    turns.close()
+    chan.closed = true
+    chan.deliver?.(null)
+    session?.close?.()
   })
 })

@@ -1,6 +1,7 @@
-import { BACKEND } from '../config'
+import { BACKEND, LANG } from '../config'
 import * as direct from './anthropic'
 import * as bridge from './bridge'
+import { formatAsides, type AsideItem } from './aside'
 import type { AskHandlers, Msg } from './anthropic'
 import type { Blade, Panel } from '../store'
 
@@ -23,16 +24,28 @@ export type { ConnectionState } from './bridge'
 export const usingBridge = BACKEND === 'bridge'
 
 /** Conversation state lives in the bridge session, so history is only threaded
- *  through on the direct path. */
+ *  through on the direct path. `asides` are what the page answered by itself
+ *  since the last model turn (aside.ts): on the bridge they travel beside the
+ *  question, with their ids, and the bridge passes on only those its session
+ *  has not had; on the direct path they are part of the user message, and of
+ *  the history the caller keeps. */
 export async function ask(
   prompt: string,
   history: Msg[],
   handlers: AskHandlers,
+  asides: AsideItem[] = [],
 ): Promise<{ text: string; tools: string[] }> {
   return usingBridge
-    ? bridge.ask(prompt, handlers)
-    : direct.ask([...history, { role: 'user', content: prompt }], handlers)
+    ? bridge.ask(prompt, handlers, asides)
+    : direct.ask([...history, { role: 'user', content: withContext(prompt, asideNote(asides)) }], handlers)
 }
+
+/** The note the direct path puts in front of the question, or null. */
+export const asideNote = (asides: AsideItem[]): string | null => (asides.length ? formatAsides(asides, LANG) : null)
+
+/** The user message as the direct path sends it: the note first, then the question. */
+export const withContext = (prompt: string, context: string | null): string =>
+  context ? `${context}\n\n${prompt}` : prompt
 
 export async function warm(): Promise<void> {
   if (usingBridge) await bridge.warmBridge()

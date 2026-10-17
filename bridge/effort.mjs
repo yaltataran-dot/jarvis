@@ -47,12 +47,37 @@ const LOOKUP = new RegExp(
   'iu',
 )
 
+/**
+ * Said again, differently: "объясни проще", "сделай короче", "попроще". The
+ * answer is the last one reworded — nothing to look up and nothing new to think
+ * through — but "объясни" alone put it on 'high'. Only when nothing else is
+ * asked: "короче, сравни три тарифа" is "короче" as a filler and a new question.
+ */
+const REPHRASE = /^(?:проще|попроще|короче|покороче|понятнее|попонятнее|простыми словами|другими словами|своими словами|simpler|shorter|in plain words|in other words)$/iu
+/** The words that may stand around it: "а можно чуть попроще", "объясни это проще". */
+const REPHRASE_FRAME = /^(?:а|ну|и|можно|давай|ещё|еще|чуть|немного|пожалуйста|объясни|скажи|сделай|расскажи|перескажи|повтори|сформулируй|это|то|же|сэр|explain|say|make|it|that|please|a|bit|little)$/iu
+
+const isRephrase = (t) => {
+  const ws = t.toLowerCase().replace(/[.,!?;:«»"…()-]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  // Two-word markers ("простыми словами") are tried as a pair first.
+  let marked = false
+  for (let k = 0; k < ws.length; k++) {
+    if (k + 1 < ws.length && REPHRASE.test(`${ws[k]} ${ws[k + 1]}`)) {
+      marked = true
+      k++
+    } else if (REPHRASE.test(ws[k])) marked = true
+    else if (!REPHRASE_FRAME.test(ws[k])) return false
+  }
+  return marked
+}
+
 /** Words in a question. */
 const words = (text) => text.trim().split(/\s+/).filter(Boolean).length
 
 /** 'low' | 'medium' | 'high' for one question. */
 export function effortFor(text) {
   const t = String(text ?? '')
+  if (isRephrase(t)) return 'low'
   if (THINK.test(t) || words(t) > 25) return 'high'
   if (LOOKUP.test(t)) return 'medium'
   if (words(t) <= 8) return 'low'

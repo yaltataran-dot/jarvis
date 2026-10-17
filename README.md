@@ -232,6 +232,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_ALLOWED_ORIGINS` | local dev | Extra WebSocket origins to accept |
 | `JARVIS_ALLOW_NO_ORIGIN` | off | Accept connections with no `Origin` header |
 | `JARVIS_FILE_ROOTS` | — | Roots the `/file` endpoint may serve from |
+| `JARVIS_FALLBACK` | off | `anthropic-api` turns on a text-only fallback for the usage limit; needs `JARVIS_FALLBACK_API_KEY`, `_MODEL` and `_BUDGET_USD` (see `.env.example`) |
 | `JARVIS_VOICE_ID` | — | ElevenLabs voice id |
 | `ELEVENLABS_API_KEY` | — | Optional; enables the ElevenLabs voice + Scribe |
 

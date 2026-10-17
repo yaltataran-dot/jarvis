@@ -22,25 +22,39 @@ export type LocalState = {
 
 export type LocalKind = 'name' | 'time' | 'date' | 'voice' | 'hearing' | 'link'
 
-/** Lower case, ё as е, no punctuation, no polite padding. */
+/**
+ * What may stand in front of the question without changing it: his name, the
+ * brand, "скажи", "пожалуйста" — and the fillers of spoken Russian, "ну",
+ * "а", "слушай", "эм". Measured before they were allowed: "Слушай, который
+ * час?" and "А который час?" went to the model, which does not know the time.
+ */
+const LEAD = /^(?:джарвис|юг трансфер|скажи(?:те)?|подскажи(?:те)?|пожалуйста|ну|а|и|слушай|слышь|эй|так|ка|э+м*|м+)(?: |$)/
+
+/** Lower case, ё as е, no punctuation, no polite padding, no fillers in front. */
 export function normalise(said: string): string {
-  return said
+  let t = said
     .toLowerCase()
     .replace(/ё/g, 'е')
     .replace(/[.,!?;:«»"“”…()-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/^(?:джарвис |юг трансфер )?(?:скажи(?:те)? |подскажи(?:те)? )?(?:пожалуйста )?/, '')
-    .replace(/(?: пожалуйста| сэр| джарвис)+$/, '')
-    .trim()
+  for (let prev = ''; prev !== t; ) {
+    prev = t
+    t = t.replace(LEAD, '')
+  }
+  return t.replace(/(?: пожалуйста| сэр| джарвис)+$/, '').trim()
 }
 
 const RULES: Array<[LocalKind, RegExp]> = [
   ['name', /^(?:как тебя зовут|как твое имя|кто ты(?: такой)?|представься)$/],
-  ['time', /^(?:который (?:сейчас )?час|сколько (?:сейчас )?времени|сколько времени сейчас|какое сейчас время)$/],
+  [
+    'time',
+    // "Сколько время" is how it is said, whatever the grammar books say.
+    /^(?:(?:сейчас )?который (?:сейчас )?час(?: сейчас)?|(?:сейчас )?сколько (?:сейчас )?(?:времени|время)(?: сейчас)?|время сколько(?: сейчас)?|какое сейчас время|сколько на часах)$/,
+  ],
   [
     'date',
-    /^(?:какое (?:сегодня |сейчас )?число(?: сегодня)?|какая (?:сегодня |сейчас )?дата(?: сегодня)?|какой (?:сегодня )?день недели(?: сегодня)?|какой сегодня день)$/,
+    /^(?:(?:сегодня )?какое (?:сегодня |сейчас )?число(?: сегодня)?|(?:сегодня )?какая (?:сегодня |сейчас )?дата(?: сегодня)?|(?:сегодня )?какой (?:сегодня )?день недели(?: сегодня)?|(?:сегодня )?какой сегодня день|сегодня какой день)$/,
   ],
   [
     'voice',

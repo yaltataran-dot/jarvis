@@ -83,6 +83,52 @@ export function rateLimitMessage(clock, lang = 'ru') {
 }
 
 /**
+ * Why the fallback channel (fallback.mjs) could not answer, as the end of the
+ * limit's sentence. Each kind is its own words, so a wrong key, a spent budget
+ * and a dead network are not all "unavailable".
+ */
+const FALLBACK_RU = {
+  config: 'резервный канал не настроен',
+  budget: 'дневной бюджет резервного канала исчерпан',
+  auth: 'резервный канал не принял ключ',
+  forbidden: 'резервный канал отклонил запрос',
+  rate: 'резервный канал тоже упёрся в лимит',
+  billing: 'у резервного канала проблема с оплатой',
+  timeout: 'резервный канал не ответил вовремя',
+  network: 'до резервного канала нет связи',
+  service: 'резервный канал недоступен',
+}
+const FALLBACK_EN = {
+  config: 'the fallback channel is not set up',
+  budget: "the fallback channel's daily budget is spent",
+  auth: 'the fallback channel did not accept its key',
+  forbidden: 'the fallback channel refused the request',
+  rate: 'the fallback channel is rate limited too',
+  billing: 'the fallback channel has a billing problem',
+  timeout: 'the fallback channel did not answer in time',
+  network: 'the fallback channel cannot be reached',
+  service: 'the fallback channel is unavailable',
+}
+
+/** The limit is reached and the fallback could not take the question either. */
+export function fallbackDownMessage(kind, lang = 'ru') {
+  if (lang === 'en') {
+    return `The Claude usage limit is reached, and ${FALLBACK_EN[kind] ?? FALLBACK_EN.service}. Commands that need no model still work.`
+  }
+  return `Лимит Claude исчерпан, а ${FALLBACK_RU[kind] ?? FALLBACK_RU.service}. Команды без модели работают.`
+}
+
+/**
+ * The limit hit part way through a turn that had already called tools. Not
+ * retried anywhere: some of what was asked may already have happened.
+ */
+export function limitMidTurnMessage(lang = 'ru') {
+  return lang === 'en'
+    ? 'The Claude usage limit was reached part way through. Some of it may already be done — check before asking again.'
+    : 'Лимит Claude исчерпан посреди запроса. Часть действий могла выполниться — проверьте, прежде чем повторять.'
+}
+
+/**
  * A short sentence for the screen. Reads, in order of how specific it is: the
  * HTTP status Claude Code recorded, the assistant message's error kind, a
  * status or network error written into the result text, the result subtype.

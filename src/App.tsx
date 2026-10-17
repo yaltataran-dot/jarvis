@@ -38,6 +38,8 @@ import {
   connectedLabels,
   usingBridge,
   isConnected,
+  withContext,
+  asideNote,
   type Msg,
 } from './lib/brain'
 import { getMic, startAnalyser, micLevel } from './lib/audio'
@@ -51,6 +53,7 @@ import { bridgeCalendar } from './lib/calendarClient'
 import { createFloor, type Floor, type Turn } from './lib/floor'
 import { makeVoiceSlot, type VoiceSlot } from './lib/voiceSlot'
 import { routePhrase } from './lib/turnRoute'
+import { createAsides, type Asides } from './lib/aside'
 import { GREET_SCREEN_MS, HANDOVER_MS, SPLASH_AFTER_START_MS } from './lib/bootTimeline'
 
 type Speaker = ReturnType<typeof createSpeaker>
@@ -138,6 +141,9 @@ export default function App() {
   const store = useStore
   const phase = useStore((s) => s.phase)
   const history = useRef<Msg[]>([])
+  /** What the page answered without the model, for its next turn — see aside.ts. */
+  const asides = useRef<Asides | null>(null)
+  if (!asides.current) asides.current = createAsides(LANG)
 
   /**
    * Who is speaking and which turn is in flight — see floor.ts. Every speaker
@@ -267,11 +273,11 @@ export default function App() {
       calendarWaiting: () => calendar.current?.waiting() ?? false,
       calendar: (p) => calendarTurn(p, t),
       music: musicCommand,
-      playMusic: (c) => musicTurn(c, t),
+      playMusic: (c) => musicTurn(c, t, said),
       stale,
       local: (p) =>
         localAnswer(p, { now: new Date(), voice: store.getState().voice, connected: !usingBridge || isConnected() }),
-      sayLocal: (answer) => localTurn(answer, t),
+      sayLocal: (answer) => localTurn(answer, t, said),
     })
     if (route === 'stop') {
       t.done('stop')
@@ -298,6 +304,9 @@ export default function App() {
      */
     let early = 0
     const stopEarly = () => window.clearTimeout(early)
+
+    // What the page answered by itself since the model last heard from us.
+    const sent = asides.current!.pending()
 
     try {
       const { text } = await t.ask(() => ask(said, history.current, {
@@ -347,7 +356,10 @@ export default function App() {
             spk.say(forTool(name))
           }
         },
-      }))
+      }, sent))
+      // They went in with this question: not to be handed over again. Only
+      // these — one the page answered while this turn ran is still to go.
+      asides.current!.drop(sent.map((a) => a.id))
 
       trace('app:answer', { len: text.length, stale: stale() })
       if (stale()) return
@@ -366,7 +378,7 @@ export default function App() {
       // The bridge keeps conversation state in its own session, so history is
       // only threaded through on the direct path.
       if (!usingBridge) {
-        history.current.push({ role: 'user', content: said })
+        history.current.push({ role: 'user', content: withContext(said, asideNote(sent)) })
         history.current.push({ role: 'assistant', content: text || '…' })
         if (history.current.length > 16) {
           history.current = history.current.slice(-16)
@@ -445,7 +457,7 @@ export default function App() {
    * from the player's state as the bridge read it back, so "включаю" is only
    * said when the music did start.
    */
-  const musicTurn = async (intent: MusicIntent, t: Turn<Speaker>): Promise<void> => {
+  const musicTurn = async (intent: MusicIntent, t: Turn<Speaker>, said: string): Promise<void> => {
     const stale = t.stale
     const r = intent.action === 'clarify' ? { code: 'ok' as const } : await runMusic(intent)
     if (stale()) return
@@ -465,6 +477,7 @@ export default function App() {
 
     const s = store.getState()
     s.pushTurn({ id: newId(), role: 'jarvis', text })
+    asides.current!.add(said, text)
     s.setPhase('speaking')
     const spk = t.speaker(() => createSpeaker(), 'music')
     spk.say(text)
@@ -489,11 +502,12 @@ export default function App() {
    * voice (localAnswer.ts). No model turn, so nothing to interrupt; the
    * floor still owns the voice, so a newer turn cuts it like any other.
    */
-  const localTurn = async (answer: string, t: Turn<Speaker>): Promise<void> => {
+  const localTurn = async (answer: string, t: Turn<Speaker>, said: string): Promise<void> => {
     const stale = t.stale
     trace('app:local', { len: answer.length })
     const s = store.getState()
     s.pushTurn({ id: newId(), role: 'jarvis', text: answer })
+    asides.current!.add(said, answer)
     s.setPhase('speaking')
     const spk = t.speaker(() => createSpeaker(), 'local')
     spk.say(answer)
@@ -523,6 +537,7 @@ export default function App() {
     trace('app:calendar', { asks: reply.expectAnswer })
     const s = store.getState()
     s.pushTurn({ id: newId(), role: 'jarvis', text: reply.say })
+    asides.current!.add(said, reply.say)
     s.setPhase('speaking')
     const spk = t.speaker(() => createSpeaker(), 'calendar')
     // push, not say: a list of meetings is several sentences.

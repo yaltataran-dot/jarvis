@@ -1,4 +1,5 @@
 import type { AskHandlers } from './anthropic'
+import type { AsideItem } from './aside'
 import type { Blade, Panel } from '../store'
 import { BRIDGE_WS_URL, LANG } from '../config'
 
@@ -381,6 +382,10 @@ let pending: { finish: (fallback?: string) => void } | null = null
 export async function ask(
   prompt: string,
   handlers: AskHandlers,
+  /** What the page answered by itself (aside.ts) — sent apart from the
+   *  question, so the bridge sorts its effort by what was actually asked, and
+   *  with their ids, so the bridge can pass on only what its session lacks. */
+  asides: AsideItem[] = [],
 ): Promise<{ text: string; tools: string[] }> {
   /**
    * A new question supersedes the one in flight.
@@ -559,7 +564,7 @@ export async function ask(
 
     try {
       trace('ask:sent', { id })
-      ws.send(JSON.stringify({ type: 'ask', text: prompt, id }))
+      ws.send(JSON.stringify({ type: 'ask', text: prompt, id, ...(asides.length ? { asides } : {}) }))
     } catch (err) {
       // The socket can go into CLOSING between connect() resolving and here.
       fail(err instanceof Error ? err : new Error(String(err)))
