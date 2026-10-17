@@ -28,6 +28,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { withoutSecrets } from './secrets.mjs'
 
 const DEFAULT_DIR =
   process.platform === 'win32'
@@ -171,7 +172,7 @@ class Worker {
         '--sentence_silence', String(s.sentenceSilence),
       ],
       // piper looks for espeak-ng-data and onnxruntime next to itself.
-      { cwd: join(PIPER_DIR, 'piper'), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
+      { cwd: join(PIPER_DIR, 'piper'), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: withoutSecrets(process.env) },
     )
     this.alive = true
     this.proc.stdout.setEncoding('utf8')

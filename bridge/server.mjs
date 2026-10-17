@@ -51,6 +51,7 @@ import { musicServer } from './music.mjs'
 import { calendarAction, createGoogleCalendar } from './googleCalendar.mjs'
 import { calendarServer } from './calendar.mjs'
 import { answerRequest, formatNotes, notesFor, startKnowledge } from './knowledgeRoute.mjs'
+import { agentEnv, installLogRedaction, redactSecrets, registerSecrets, secretValuesFrom, writesAllowed } from './secrets.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 // Loopback only by default. Bound to every interface, the agent socket and the
@@ -67,6 +68,14 @@ const HOST = process.env.JARVIS_BRIDGE_HOST || '127.0.0.1'
 process.on('unhandledRejection', (err) => {
   console.error('[jarvis] unhandled rejection:', err)
 })
+
+/**
+ * The bridge's own keys, masked by value wherever they would be printed or
+ * sent to the page — an SDK error carrying the CLI's stderr, an API error
+ * echoing a header. See secrets.mjs.
+ */
+registerSecrets(secretValuesFrom(process.env))
+installLogRedaction(console)
 
 /**
  * Every log line carries the time. The log is the only record of what a turn
@@ -169,8 +178,15 @@ function hostAllowed(host) {
  * Read-only and generative tools run freely. Anything that writes to disk,
  * runs a shell, or changes the world waits for JARVIS_ALLOW_WRITES=1. Start
  * without it, and turn it on once you trust what you're demoing.
+ *
+ * Never as root: the shell it opens would be the whole machine's. A bridge
+ * running as root keeps writes off whatever the flag says — see writesAllowed.
  */
-const ALLOW_WRITES = process.env.JARVIS_ALLOW_WRITES === '1'
+const WRITES = writesAllowed(process.env, process.getuid?.())
+const ALLOW_WRITES = WRITES.allowed
+if (WRITES.refusedAsRoot) {
+  console.warn('[jarvis] JARVIS_ALLOW_WRITES=1 refused: the bridge runs as root — writes stay off')
+}
 
 /**
  * The orchestrator model. Override with JARVIS_MODEL to trade quality for pace
@@ -220,7 +236,8 @@ const READ_ONLY_BUILTINS = new Set([
   'BashOutput', 'TaskOutput',
 ])
 const WRITE_BUILTINS = new Set([
-  'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
+  // PowerShell is the CLI's other shell, on Windows (CLAUDE_CODE_USE_POWERSHELL_TOOL).
+  'Bash', 'PowerShell', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
   'KillShell', 'TaskStop',
 ])
 
@@ -239,7 +256,7 @@ const WRITE_BUILTINS = new Set([
  */
 const DISALLOWED_BUILTINS = ALLOW_WRITES
   ? []
-  : ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Task', 'Agent']
+  : ['Read', 'Glob', 'Grep', 'Bash', 'PowerShell', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Task', 'Agent']
 
 /**
  * The folders the jarvis_pc tools may see: the project, plus any listed in
@@ -1225,7 +1242,7 @@ const handleRequest = async (req, res) => {
     } catch (err) {
       if (res.headersSent) return res.destroy()
       res.writeHead(err.status ?? 502, cors)
-      return res.end(err.message ?? 'proxy failed')
+      return res.end(redactSecrets(err.message ?? 'proxy failed'))
     }
     return
   }
@@ -1243,7 +1260,7 @@ const handleRequest = async (req, res) => {
     } catch (err) {
       if (res.headersSent) return res.destroy()
       res.writeHead(err.status ?? 502, cors)
-      return res.end(err.message ?? 'proxy failed')
+      return res.end(redactSecrets(err.message ?? 'proxy failed'))
     }
     return
   }
@@ -1421,7 +1438,7 @@ const handleRequest = async (req, res) => {
       } catch (err) {
         console.error(`[jarvis] piper failed: ${err?.message ?? err}`)
         res.writeHead(502, cors)
-        return res.end(String(err?.message ?? err))
+        return res.end(redactSecrets(String(err?.message ?? err)))
       }
     }
     if (!key) return speakLocally()
@@ -1473,7 +1490,7 @@ const handleRequest = async (req, res) => {
       if (res.headersSent) return res.destroy()
       if (piperReady) return speakLocally()
       res.writeHead(502, cors)
-      return res.end(String(err?.message ?? err))
+      return res.end(redactSecrets(String(err?.message ?? err)))
     }
   }
 
@@ -1553,7 +1570,7 @@ const handleRequest = async (req, res) => {
       return res.end(JSON.stringify({ text: (data.text ?? '').trim() }))
     } catch (err) {
       res.writeHead(502, cors)
-      return res.end(String(err?.message ?? err))
+      return res.end(redactSecrets(String(err?.message ?? err)))
     }
   }
 
@@ -1696,12 +1713,12 @@ const FALLBACK = (() => {
 })()
 
 /**
- * The agent's environment: this process's, less the fallback's own settings.
- * Its key is for fallback.mjs alone and has no business in Claude Code.
+ * The agent's environment: what Claude Code needs and nothing of the
+ * bridge's — no Deepgram or ElevenLabs key, no fallback key, no JARVIS_*
+ * setting. A list of what is passed rather than of what is held back, so a key
+ * added later stays here by default. See secrets.mjs.
  */
-const AGENT_ENV = Object.fromEntries(
-  Object.entries(process.env).filter(([k]) => !k.startsWith('JARVIS_FALLBACK')),
-)
+const AGENT_ENV = agentEnv(process.env)
 
 wss.on('connection', (socket, req) => {
   // Streaming recognition shares the port and the Origin check, not the agent.
@@ -2304,7 +2321,7 @@ wss.on('connection', (socket, req) => {
       // A replaced session dying is the expected end of it.
       if (gen !== sessionGen) return
       console.error('[jarvis] session error:', err)
-      send({ type: 'error', message: String(err?.message ?? err) })
+      send({ type: 'error', message: redactSecrets(String(err?.message ?? err)) })
       // The stream is finished either way — nothing will ever be read from it
       // again. Leaving the socket open would leave the client believing it has
       // a working bridge, and every later question would hang for ever waiting

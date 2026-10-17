@@ -39,6 +39,7 @@ import { existsSync as nodeExists, readFileSync, writeFileSync, mkdirSync } from
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { withoutSecrets } from './secrets.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -397,7 +398,7 @@ export function dpapi(mode, text, { spawn = nodeSpawn } = {}) {
     const child = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(HERE, 'dpapi.ps1'), '-Mode', mode],
-      { windowsHide: true, shell: false },
+      { windowsHide: true, shell: false, env: withoutSecrets(process.env) },
     )
     let out = ''
     let err = ''
