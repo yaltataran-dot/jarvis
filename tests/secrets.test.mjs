@@ -213,22 +213,60 @@ test('the log masks strings and objects, errors from the fallback included, and 
   assert.equal(lines.length, 3, 'one line each: not wrapped twice')
 })
 
+const ON = { JARVIS_ALLOW_WRITES: '1' }
+
 test('JARVIS_ALLOW_WRITES is refused to a bridge running as root', () => {
-  assert.deepEqual(writesAllowed({ JARVIS_ALLOW_WRITES: '1' }, 0), { allowed: false, refusedAsRoot: true })
-  assert.deepEqual(writesAllowed({ JARVIS_ALLOW_WRITES: '1' }, 1000), { allowed: true, refusedAsRoot: false })
-  // Windows has no uid: the flag decides, as before.
-  assert.deepEqual(writesAllowed({ JARVIS_ALLOW_WRITES: '1' }, undefined), { allowed: true, refusedAsRoot: false })
-  for (const v of [undefined, '', '0', 'true', 'yes']) {
-    assert.deepEqual(writesAllowed({ JARVIS_ALLOW_WRITES: v }, 1000), { allowed: false, refusedAsRoot: false }, String(v))
-    assert.deepEqual(writesAllowed({ JARVIS_ALLOW_WRITES: v }, 0), { allowed: false, refusedAsRoot: false }, String(v))
+  assert.deepEqual(writesAllowed(ON, { uid: 0, platform: 'linux' }), { allowed: false, refused: 'root' })
+  assert.deepEqual(writesAllowed(ON, { uid: 0, platform: 'darwin' }), { allowed: false, refused: 'root' })
+})
+
+test('an ordinary user may turn writes on', () => {
+  assert.deepEqual(writesAllowed(ON, { uid: 1000, platform: 'linux' }), { allowed: true, refused: null })
+  assert.deepEqual(writesAllowed(ON, { uid: 501, platform: 'darwin' }), { allowed: true, refused: null })
+})
+
+test('a uid that is missing or not a number is refused like root — never read as "not root"', () => {
+  for (const uid of [undefined, null, NaN, -1, 1.5, '1000', '0']) {
+    assert.deepEqual(writesAllowed(ON, { uid, platform: 'linux' }), { allowed: false, refused: 'unknown-uid' }, String(uid))
   }
+  // Left out altogether: the old default turned this into process.getuid(), root on the server.
+  assert.deepEqual(writesAllowed(ON, { platform: 'linux' }), { allowed: false, refused: 'unknown-uid' })
+  assert.throws(() => writesAllowed(ON), TypeError, 'no defaults: the caller must say who it runs as')
+})
+
+test('Windows has no uids: the flag decides, as before', () => {
+  assert.deepEqual(writesAllowed(ON, { uid: undefined, platform: 'win32' }), { allowed: true, refused: null })
+})
+
+test('without the flag writes stay off, and nothing is reported as refused', () => {
+  for (const v of [undefined, '', '0', 'true', 'yes']) {
+    for (const who of [{ uid: 1000, platform: 'linux' }, { uid: 0, platform: 'linux' }, { uid: undefined, platform: 'linux' }, { platform: 'win32' }]) {
+      assert.deepEqual(writesAllowed({ JARVIS_ALLOW_WRITES: v }, who), { allowed: false, refused: null }, `${v} ${JSON.stringify(who)}`)
+    }
+  }
+})
+
+test('on this machine, called the way the bridge calls it, the real user decides', () => {
+  // A separate process, so the answer comes from this system's own getuid().
+  const src = new URL('../bridge/secrets.mjs', import.meta.url).href
+  const r = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', `import { writesAllowed } from ${JSON.stringify(src)}; process.stdout.write(JSON.stringify({ uid: process.getuid?.() ?? null, platform: process.platform, result: writesAllowed({ JARVIS_ALLOW_WRITES: '1' }, { uid: process.getuid?.(), platform: process.platform }) }))`],
+    { encoding: 'utf8', env: { PATH: process.env.PATH ?? process.env.Path ?? '', SystemRoot: process.env.SystemRoot ?? '' } },
+  )
+  assert.equal(r.status, 0, r.stderr)
+  const { uid, platform, result } = JSON.parse(r.stdout)
+  const expected = platform === 'win32' ? { allowed: true, refused: null } : uid === 0 ? { allowed: false, refused: 'root' } : { allowed: true, refused: null }
+  assert.deepEqual(result, expected, `uid=${uid} platform=${platform}`)
 })
 
 test('the bridge is wired to all of it', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8')
   assert.match(server, /const AGENT_ENV = agentEnv\(process\.env\)/)
   assert.match(server, /env: \{ \.\.\.AGENT_ENV, ENABLE_TOOL_SEARCH: 'false' \}/)
-  assert.match(server, /writesAllowed\(process\.env, process\.getuid\?\.\(\)\)/)
+  assert.match(server, /writesAllowed\(process\.env, \{ uid: process\.getuid\?\.\(\), platform: process\.platform \}\)/)
+  assert.match(server, /WRITES\.refused === 'root'/)
+  assert.match(server, /WRITES\.refused === 'unknown-uid'/)
   assert.match(server, /const ALLOW_WRITES = WRITES\.allowed/)
   assert.doesNotMatch(server, /process\.env\.JARVIS_ALLOW_WRITES === '1'/)
   assert.match(server, /registerSecrets\(secretValuesFrom\(process\.env\)\)/)

@@ -184,12 +184,20 @@ export function installLogRedaction(con = console) {
  * the flag says. Checking the uid is a floor, not isolation: as any user the
  * shell still reaches what that user can.
  *
- * `uid` is process.getuid?.(): undefined on Windows, where there is no root
- * to refuse.
+ * Both are passed in, with no defaults: a default for `uid` once turned a
+ * caller's "no uid" into process.getuid() — root, on the server — and a
+ * missing uid must never read as "not root". So: on Windows, which has no
+ * uids, the flag decides; anywhere else a uid that is not a plain number is
+ * refused like root.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @param {{ uid: number | undefined, platform: string }} who  process.getuid?.() and process.platform
+ * @returns {{ allowed: boolean, refused: null | 'root' | 'unknown-uid' }}
  */
-export function writesAllowed(env = process.env, uid = process.getuid?.()) {
-  const asked = env.JARVIS_ALLOW_WRITES === '1'
-  if (!asked) return { allowed: false, refusedAsRoot: false }
-  if (uid === 0) return { allowed: false, refusedAsRoot: true }
-  return { allowed: true, refusedAsRoot: false }
+export function writesAllowed(env, { uid, platform }) {
+  if (env?.JARVIS_ALLOW_WRITES !== '1') return { allowed: false, refused: null }
+  if (platform === 'win32') return { allowed: true, refused: null }
+  if (!Number.isInteger(uid) || uid < 0) return { allowed: false, refused: 'unknown-uid' }
+  if (uid === 0) return { allowed: false, refused: 'root' }
+  return { allowed: true, refused: null }
 }
