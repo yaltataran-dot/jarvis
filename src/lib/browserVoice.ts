@@ -1,4 +1,4 @@
-import { OVERRIDE, STOP_ONLY, STOP_TAIL } from './stopWords'
+import { L, OVERRIDE, R, STOP_ONLY, STOP_TAIL } from './stopWords'
 import { isEcho, norm } from './echo'
 import { isBargeIn } from './bargeIn'
 import { makeLedger, type Result } from './ledger'
@@ -18,6 +18,11 @@ import {
   type Voice,
   type VoiceHandlers,
 } from './voiceCore'
+
+/** "нет"/"no" cut through his speech, but inside the rest of a question ("нет ли дождя") they are just words. */
+const PLAIN_NO = new RegExp(`${L}(?:нет|no)${R}`, 'giu')
+/** ...but a rest that ends on a bare "нет" may be the user's own answer, so it is not swallowed. */
+const NO_TAIL = new RegExp(`${L}(?:нет|no)${R}[\\s,.!?]*$`, 'iu')
 
 /**
  * What the speech output knows about his own voice — tts.ts in the page, a
@@ -148,8 +153,12 @@ export function startBrowserVoice(h: VoiceHandlers, d: BrowserVoiceDeps): Voice 
   const hearsHim = () =>
     speakingSince() !== 0 || (speechActive() && sessionAt <= lastSoundEnded())
 
+  /** The first result of this phrase has been traced — see turnLog.ts. */
+  let traced = false
+
   /** Everything heard so far is dealt with: sent, or deliberately dropped. */
   const reset = () => {
+    traced = false
     clearSilence()
     settled = ''
     interim = ''
@@ -162,7 +171,7 @@ export function startBrowserVoice(h: VoiceHandlers, d: BrowserVoiceDeps): Voice 
     const text = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
     const mode = h.mode()
     reset()
-    trace('voice:emit', { mode, len: text.length, text: text.slice(0, 40) })
+    trace('voice:emit', { mode, len: text.length, text: text.slice(0, 120) })
     if (!text || mode === 'deaf') return
     // Never a command while he is audible — see onResult.
     if (hearsHim()) {
@@ -257,6 +266,10 @@ export function startBrowserVoice(h: VoiceHandlers, d: BrowserVoiceDeps): Voice 
 
   const onResult = (e: any) => {
     touch()
+    if (!traced) {
+      traced = true
+      trace('rec:start', { mode: h.mode() })
+    }
     const mode = h.mode()
     diag.mode = mode
     // Only what has not been dealt with already — see ledger.ts. Read in every
@@ -348,7 +361,7 @@ export function startBrowserVoice(h: VoiceHandlers, d: BrowserVoiceDeps): Voice 
        * their own are the user going on, and stay a question of their own;
        * a stop word stays a stop.
        */
-      if (fresh.trim() && ledger.extended() && !OVERRIDE.test(fresh)) {
+      if (fresh.trim() && ledger.extended() && !OVERRIDE.test(fresh.replace(PLAIN_NO, ' ')) && !NO_TAIL.test(fresh)) {
         trace('voice:late-rest', { len: fresh.length })
         settled = `${lastSentText} `
       }
@@ -572,6 +585,7 @@ export function startBrowserVoice(h: VoiceHandlers, d: BrowserVoiceDeps): Voice 
       }
     },
     live: () => running,
+    idle: () => !settled && !interim && !started && !assemble.held() && !silenceTimer,
     /**
      * Have a session that has not heard him capturing before the user is
      * invited to speak.

@@ -53,6 +53,12 @@ export type Voice = {
    * or false if none came up in time. See browserVoice.ts.
    */
   rearm: () => Promise<boolean>
+  /**
+   * Between phrases: nothing half-heard, nothing held back by the assembler.
+   * Only then can the loop be replaced by another engine without losing words.
+   * Absent on engines that cannot tell.
+   */
+  idle?: () => boolean
 }
 
 /** A loop that never started. */
@@ -309,7 +315,7 @@ export function makeAssembler(h: {
  * apart in one glance.
  */
 export const diag = {
-  /** Which input engine is running: 'elevenlabs' (VAD+Scribe) or 'browser'. */
+  /** Which input engine is running: 'scribe' or 'deepgram' (realtime), 'elevenlabs' (VAD+batch Scribe) or 'browser'. */
   engine: 'browser',
   /** Whether the microphone pipeline is live. */
   running: false,

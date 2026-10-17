@@ -16,6 +16,7 @@
  */
 
 import { WebSocketServer } from 'ws'
+import { STT_PATH, cleanKey, createSttProxy } from './deepgramProxy.mjs'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
@@ -42,14 +43,20 @@ import {
 } from './failures.mjs'
 import { createTurns } from './turns.mjs'
 import { createBudget, createFallback, fallbackConfig, fileStore } from './fallback.mjs'
+import { cleanInfo, createTurnLog } from './turnLog.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
 import { createYandexMusic, musicAction } from './yandexMusic.mjs'
 import { musicServer } from './music.mjs'
 import { calendarAction, createGoogleCalendar } from './googleCalendar.mjs'
 import { calendarServer } from './calendar.mjs'
+import { answerRequest, formatNotes, notesFor, startKnowledge } from './knowledgeRoute.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+// Loopback only by default. Bound to every interface, the agent socket and the
+// /fetch proxy are one open firewall away from the internet; on a server that
+// is reached through an SSH tunnel to 127.0.0.1, loopback is all it needs.
+const HOST = process.env.JARVIS_BRIDGE_HOST || '127.0.0.1'
 
 /**
  * A crash here takes the whole assistant down mid-sentence, and most of what
@@ -117,6 +124,42 @@ function originAllowed(origin) {
   if (url.protocol !== 'http:') return false
   if (!LOCAL_HOSTS.has(url.hostname)) return false
   return isDevPort(Number(url.port))
+}
+
+/**
+ * Which Host header the bridge answers to — the guard against DNS rebinding.
+ *
+ * Same-origin GETs carry no Origin, so a page on attacker.example whose name
+ * is re-pointed at 127.0.0.1 would pass the origin check above and read /file,
+ * /img and /page through the user's SSH tunnel. Its requests still name
+ * attacker.example in Host, so only loopback names (any port — the tunnel may
+ * remap it) and hosts listed in JARVIS_ALLOWED_ORIGINS / JARVIS_ALLOWED_HOSTS
+ * are served.
+ */
+const EXTRA_HOSTS = new Set(
+  [
+    ...[...EXTRA_ORIGINS].map((o) => {
+      try {
+        return new URL(o).hostname
+      } catch {
+        return ''
+      }
+    }),
+    ...(process.env.JARVIS_ALLOWED_HOSTS ?? '').split(','),
+  ]
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+)
+
+function hostAllowed(host) {
+  if (!host) return false
+  let name
+  try {
+    name = new URL(`http://${host}`).hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  return LOCAL_HOSTS.has(name) || EXTRA_HOSTS.has(name)
 }
 
 /**
@@ -219,6 +262,15 @@ if (process.platform === 'win32') YM.warm()
  * still needs a spoken yes to its read-back in the page.
  */
 const CAL = createGoogleCalendar({ log: (line) => console.log(line) })
+
+/**
+ * The local knowledge base (knowledge.mjs). Opened once; if it cannot be, the
+ * bridge runs without it — every lookup is then a miss and every question goes
+ * to Claude exactly as before. Read-only from the page: there is no route that
+ * writes to it.
+ */
+const KNOWLEDGE = startKnowledge()
+if (KNOWLEDGE.kb) console.log('[knowledge] ready')
 
 /**
  * The usage limit, once it is known to be reached.
@@ -430,6 +482,10 @@ const LANG = (() => {
  */
 const DRY_ASK = process.env.JARVIS_DRY_ASK === '1'
 const TRACE = DRY_ASK || process.env.VITE_TRACE === '1'
+// Page trace frames also go to logs/trace.jsonl (2 MB x 3 files, written off
+// the hot path). Dialogue words stay out unless JARVIS_DIALOG_LOG=1.
+const DIALOG_LOG = process.env.JARVIS_DIALOG_LOG === '1'
+const TURN_LOG = TRACE ? createTurnLog({ dir: join(PROJECT_ROOT, 'logs'), dialog: DIALOG_LOG }) : null
 // Long enough (about ten seconds aloud) to cut off mid-sentence, and free of
 // every word in voice.ts's OVERRIDE list, or his own echo would interrupt it.
 const DRY_REPLY =
@@ -780,6 +836,33 @@ function elevenKey() {
   }
 }
 
+/**
+ * Deepgram credential, from the environment only (systemd loads
+ * /opt/jarvis/.env.bridge). Never read from a file here, never sent to the
+ * browser, never logged. Blank counts as missing.
+ */
+const deepgramKey = () => cleanKey(process.env.DEEPGRAM_API_KEY)
+
+/**
+ * Which engine does realtime recognition. JARVIS_STT=elevenlabs|deepgram pins
+ * it (a pinned engine without its key means the browser engine); unset, a
+ * Deepgram key wins over an ElevenLabs one.
+ */
+function sttEngine() {
+  const pin = (process.env.JARVIS_STT ?? '').trim().toLowerCase()
+  const dg = Boolean(deepgramKey())
+  const eleven = Boolean(elevenKey())
+  if (pin === 'elevenlabs') return eleven ? 'elevenlabs' : null
+  if (pin === 'deepgram') return dg ? 'deepgram' : null
+  return dg ? 'deepgram' : eleven ? 'elevenlabs' : null
+}
+
+const sttProxy = createSttProxy({
+  key: deepgramKey,
+  lang: LANG === 'ru' ? 'ru' : 'en',
+  log: (m) => console.log(`[jarvis] ${m}`),
+})
+
 const VOICE_ID = process.env.JARVIS_VOICE_ID ?? 'JBFqnCBsd6RMkjVDRZzb'
 
 /**
@@ -985,7 +1068,16 @@ function corsFor(req) {
 // One HTTP server for both the speech proxy and the WebSocket upgrade.
 const http = await import('node:http')
 
+/** Minimum gap between realtime Scribe tokens: a loop of failed starts must not hammer the API. */
+const SCRIBE_TOKEN_GAP_MS = 2000
+let lastScribeToken = 0
+
 const handleRequest = async (req, res) => {
+  if (!hostAllowed(req.headers.host)) {
+    console.warn(`[jarvis] refused http request for host ${req.headers.host ?? '(none)'}`)
+    res.writeHead(403, { vary: 'origin' })
+    return res.end('forbidden')
+  }
   const origin = req.headers.origin
   if (origin && !originAllowed(origin)) {
     console.warn(`[jarvis] refused http request from origin ${origin}`)
@@ -1012,17 +1104,67 @@ const handleRequest = async (req, res) => {
     const eleven = Boolean(elevenKey())
     const voices = eleven ? [] : piperVoices(LANG)
     const ttsEngine = eleven ? 'elevenlabs' : voices.length ? 'piper' : null
+    const realtime = sttEngine()
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
     return res.end(
       JSON.stringify({
         ok: true,
         tts: Boolean(ttsEngine),
         stt: eleven,
+        sttRealtime: realtime !== null,
+        sttEngine: realtime,
         ttsEngine,
         voices,
         voice: ttsEngine === 'piper' ? defaultPiperVoice(LANG) : null,
       }),
     )
+  }
+
+  // A single-use token for the browser's realtime Scribe socket. The API key
+  // stays here: the page gets a short-lived credential that opens one
+  // transcription session and nothing else. Neither the token nor the
+  // upstream's error body is logged or passed on.
+  if (req.method === 'GET' && req.url === '/scribe-token') {
+    // Stricter than the rest of this handler: a request with no Origin is
+    // refused unless JARVIS_ALLOW_NO_ORIGIN is set. The <img> case that
+    // excuses it elsewhere does not apply to a fetch for a credential.
+    if (!originAllowed(origin)) {
+      res.writeHead(403, { ...cors, 'cache-control': 'no-store' })
+      return res.end('forbidden')
+    }
+    const key = elevenKey()
+    if (!key) {
+      res.writeHead(503, { ...cors, 'cache-control': 'no-store' })
+      return res.end('no elevenlabs key')
+    }
+    const now = Date.now()
+    if (now - lastScribeToken < SCRIBE_TOKEN_GAP_MS) {
+      res.writeHead(429, { ...cors, 'cache-control': 'no-store', 'retry-after': '2' })
+      return res.end('too many requests')
+    }
+    lastScribeToken = now
+    try {
+      const upstream = await fetch('https://api.elevenlabs.io/v1/single-use-token/realtime_scribe', {
+        method: 'POST',
+        headers: { 'xi-api-key': key },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!upstream.ok) {
+        console.warn(`[jarvis] scribe token refused by ElevenLabs (${upstream.status})`)
+        res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
+        return res.end('token request failed')
+      }
+      const { token } = await upstream.json()
+      if (typeof token !== 'string' || !token) {
+        res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
+        return res.end('token request failed')
+      }
+      res.writeHead(200, { ...cors, 'cache-control': 'no-store', 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ token }))
+    } catch {
+      res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
+      return res.end('token request failed')
+    }
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
@@ -1169,6 +1311,31 @@ const handleRequest = async (req, res) => {
     }
     const result = await calendarAction(CAL, cmd)
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+    return res.end(JSON.stringify(result))
+  }
+
+  // A question the page asks before it asks Claude: is it one the user has
+  // already told JARVIS the answer to? Read-only; a miss is a normal 200 with
+  // hit:false, and a bridge without a database simply always misses.
+  if (req.method === 'POST' && req.url === '/knowledge/answer') {
+    let body = ''
+    for await (const chunk of req) {
+      body += chunk
+      if (body.length > 4096) {
+        req.destroy()
+        res.writeHead(413, cors)
+        return res.end('body too large')
+      }
+    }
+    let ask
+    try {
+      ask = JSON.parse(body || '{}')
+    } catch {
+      res.writeHead(400, cors)
+      return res.end('bad json')
+    }
+    const result = answerRequest(KNOWLEDGE.kb, ask, { log: (line) => console.log(line), defer: setImmediate })
+    res.writeHead(200, { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' })
     return res.end(JSON.stringify(result))
   }
 
@@ -1413,8 +1580,12 @@ const wss = new WebSocketServer({
   // 403 would look like the bridge simply isn't running.
   verifyClient: ({ origin, req }, done) => {
     const path = (req.url ?? '/').split('?')[0]
-    if (path !== '/' && path !== '/ws') {
+    if (path !== '/' && path !== '/ws' && path !== STT_PATH) {
       console.warn(`[jarvis] rejected websocket on path ${path}`)
+      return done(false, 403, 'Forbidden')
+    }
+    if (!hostAllowed(req.headers.host)) {
+      console.warn(`[jarvis] rejected websocket for host ${req.headers.host ?? '(none)'}`)
       return done(false, 403, 'Forbidden')
     }
     if (!originAllowed(origin)) {
@@ -1427,9 +1598,9 @@ const wss = new WebSocketServer({
     done(true)
   },
 })
-server.listen(PORT)
+server.listen(PORT, HOST)
 
-console.log(`[jarvis] bridge listening on ws://localhost:${PORT}`)
+console.log(`[jarvis] bridge listening on ws://${HOST}:${PORT}`)
 console.log(`[jarvis] language ${LANG === 'ru' ? 'ru (Russian answers)' : 'en'}`)
 if (DRY_ASK) console.log('[jarvis] DRY mode — questions get a fixed reply, Claude is never called')
 if (TRACE) console.log('[jarvis] trace on — page steps print as [trace]')
@@ -1447,6 +1618,7 @@ if (TRACE) console.log('[jarvis] trace on — page steps print as [trace]')
     }`,
   )
 }
+console.log(`[jarvis] recognition ${sttEngine() ?? 'browser engine (no Deepgram or ElevenLabs key)'}`)
 console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(
   `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED' : 'disabled'}` +
@@ -1531,7 +1703,9 @@ const AGENT_ENV = Object.fromEntries(
   Object.entries(process.env).filter(([k]) => !k.startsWith('JARVIS_FALLBACK')),
 )
 
-wss.on('connection', (socket) => {
+wss.on('connection', (socket, req) => {
+  // Streaming recognition shares the port and the Origin check, not the agent.
+  if ((req.url ?? '/').split('?')[0] === STT_PATH) return sttProxy.accept(socket)
   console.log('[jarvis] client connected')
 
   // Answer the HUD straight away rather than making it wait for the agent's
@@ -1610,7 +1784,14 @@ wss.on('connection', (socket) => {
       if (item.asides?.length && fresh.length < item.asides.length) {
         console.log(`[jarvis] asides: ${fresh.length} new, ${item.asides.length - fresh.length} already in the session`)
       }
-      const context = fresh.length ? formatAsides(fresh, LANG) : null
+      // What the local knowledge base holds on this question goes to Claude as
+      // labelled notes — data to weigh, never instructions. The page asks the
+      // base before it gets here, so reaching this point is a fallback.
+      const kn = notesFor(KNOWLEDGE.kb, text)
+      console.log(
+        `[knowledge] claude_fallback notes=${kn.notes.length} search=${kn.ms}ms${KNOWLEDGE.kb ? '' : ' (no knowledge base)'}${kn.error ? ` error="${kn.error}"` : ''}`,
+      )
+      const context = [fresh.length ? formatAsides(fresh, LANG) : null, formatNotes(kn.notes, LANG)].filter(Boolean).join('\n\n') || null
       turnMayShow = asksToSee(text)
       await tuneFor(text)
       const note = await browserNote()
@@ -2245,11 +2426,13 @@ wss.on('connection', (socket) => {
     // truncated, so nothing the page sends can flood or forge the log.
     if (msg.type === 'trace') {
       if (TRACE && typeof msg.step === 'string') {
-        const info = Object.entries(msg.info && typeof msg.info === 'object' ? msg.info : {})
-          .slice(0, 8)
-          .map(([k, v]) => `${String(k).slice(0, 20)}=${String(v).replace(/\s+/g, ' ').slice(0, 60)}`)
+        const at = typeof msg.at === 'number' ? msg.at : Date.now()
+        const info = cleanInfo(msg.info, DIALOG_LOG)
+        TURN_LOG?.add(msg.step, info, at)
+        const line = Object.entries(info)
+          .map(([k, v]) => `${k}=${v}`)
           .join(' ')
-        console.log(`[trace] ${msg.step.slice(0, 40)} ${info}`)
+        console.log(`[trace] ${msg.step.slice(0, 40)} ${line}`)
       }
       return
     }

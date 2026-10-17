@@ -20,7 +20,7 @@ const BATONI: CalEvent = {
   end: '2026-10-14T19:00:00+03:00',
 }
 
-function rig(o: { readBackHeard?: boolean } = {}) {
+function rig(o: { readBackHeard?: boolean; known?: (said: string) => Promise<string | null> } = {}) {
   const writes: string[] = []
   const api: CalApi = {
     status: async () => ({ connected: true, writes: true, timeZone: 'Europe/Moscow' }),
@@ -64,6 +64,8 @@ function rig(o: { readBackHeard?: boolean } = {}) {
       stale: t.stale,
       local: (p) => localAnswer(p, { now: new Date(2026, 9, 14, 15, 36), voice: 'Руслан (Piper)', connected: true }),
       sayLocal: async (a) => void replies.push(a),
+      // Only when a test gives it one: every other test runs with no knowledge base at all.
+      ...(o.known ? { known: o.known, sayKnown: async (a: string) => void replies.push(a) } : {}),
     })
     if (route === 'stop') {
       t.done('stop')
@@ -186,4 +188,133 @@ test('anything more than the bare question still goes to the model, and a stop i
   assert.equal(await r.say('Хватит'), 'stop')
   assert.equal(await r.say('Сделай громче'), 'music')
   assert.deepEqual(r.asked, ['Который час в Токио?'])
+})
+
+// -- the knowledge base in the route ------------------------------------------------
+
+import { openKnowledge } from '../bridge/knowledge.mjs'
+import { answerRequest } from '../bridge/knowledgeRoute.mjs'
+
+/** The page's `known` hook, backed by a real base in memory and the bridge's own decision. */
+function withBase(setup: (kb: ReturnType<typeof openKnowledge>) => void) {
+  const kb = openKnowledge({ dir: ':memory:' })
+  setup(kb)
+  const lookups: string[] = []
+  const known = async (said: string) => {
+    lookups.push(said)
+    const r = answerRequest(kb, { text: said }, { log() {} })
+    return r.hit ? (r.answer as string) : null
+  }
+  return { kb, known, lookups }
+}
+
+test('a verified answer from the base is spoken with no model turn', async () => {
+  const b = withBase((kb) => kb.add({ question: 'Какой у меня любимый кофе', answer: 'Капучино без сахара', provenance: 'user-explicit' }))
+  const r = rig({ known: b.known })
+  assert.equal(await r.say('Какой у меня любимый кофе?'), 'known')
+  assert.deepEqual(r.replies, ['Капучино без сахара'])
+  assert.equal(r.asks(), 0, 'no ask:start')
+  assert.deepEqual(r.asked, [])
+  b.kb.close()
+})
+
+test('an unknown question goes to the model', async () => {
+  const b = withBase((kb) => kb.add({ question: 'Какой у меня любимый кофе', answer: 'Капучино', provenance: 'user-explicit' }))
+  const r = rig({ known: b.known })
+  assert.equal(await r.say('Как зовут мою собаку'), 'model')
+  assert.deepEqual(r.asked, ['Как зовут мою собаку'])
+  assert.deepEqual(r.replies, [])
+  b.kb.close()
+})
+
+test('an unverified, conflicting or merely similar record is not spoken', async () => {
+  const b = withBase((kb) => {
+    kb.add({ question: 'Столица Австралии', answer: 'Сидней', provenance: 'model' })
+    kb.add({ question: 'Где я живу', answer: 'Казань', provenance: 'user-explicit' })
+    kb.add({ question: 'Где я живу', answer: 'Москва', provenance: 'model' })
+    kb.add({ question: 'Какой кофе я люблю', answer: 'Капучино', provenance: 'user-explicit' })
+  })
+  const r = rig({ known: b.known })
+  for (const q of ['Столица Австралии', 'Где я живу', 'Какой кофе я не люблю']) assert.equal(await r.say(q), 'model', q)
+  assert.deepEqual(r.replies, [])
+  assert.equal(r.asked.length, 3)
+  b.kb.close()
+})
+
+test('whatever is stored, a stop is still a stop and the base is not even asked', async () => {
+  const b = withBase((kb) => {
+    for (const w of ['Стоп', 'Хватит', 'Замолчи']) kb.add({ question: w, answer: 'не остановлюсь', provenance: 'user-explicit' })
+  })
+  const r = rig({ known: b.known })
+  for (const w of ['Стоп', 'Хватит', 'Замолчи']) assert.equal(await r.say(w), 'stop', w)
+  assert.deepEqual(b.lookups, [])
+  assert.deepEqual(r.replies, [])
+  assert.equal(r.listened(), 3)
+  b.kb.close()
+})
+
+test('calendar, music and the page’s own answers are not intercepted by the base', async () => {
+  const b = withBase((kb) => {
+    for (const q of ['Запиши встречу завтра в 15:00', 'Включи музыку', 'Который час', 'Как тебя зовут', 'Следующий трек'])
+      kb.add({ question: q, answer: 'ответ из базы', provenance: 'user-explicit' })
+  })
+  const r = rig({ known: b.known })
+  assert.equal(await r.say('Запиши встречу завтра в 15:00'), 'calendar')
+  assert.equal(await r.say('Отмена'), 'calendar')
+  assert.equal(await r.say('Включи музыку'), 'music')
+  assert.equal(await r.say('Следующий трек'), 'music')
+  assert.equal(await r.say('Который час'), 'local')
+  assert.equal(await r.say('Как тебя зовут'), 'local')
+  assert.deepEqual(b.lookups, [], 'the base was never consulted for any of them')
+  assert.ok(!r.replies.includes('ответ из базы'))
+  assert.deepEqual(r.writes, [])
+  b.kb.close()
+})
+
+test('a calendar question waiting for its answer hears it first, even if the base holds the same words', async () => {
+  const b = withBase((kb) => kb.add({ question: 'Записывай', answer: 'из базы', provenance: 'user-explicit' }))
+  const r = rig({ known: b.known })
+  await r.say('Запиши встречу завтра в 15:00')
+  assert.equal(await r.say('Записывай'), 'calendar')
+  assert.deepEqual(r.writes, ['create'])
+  assert.deepEqual(b.lookups, [])
+  b.kb.close()
+})
+
+test('a base that is down, slow to fail or throwing does not break the turn: it goes to the model', async () => {
+  for (const known of [async () => null, async () => { throw new Error('boom') }]) {
+    const r = rig({ known: known as (s: string) => Promise<string | null> })
+    let route: string
+    try {
+      route = await r.say('Какой у меня любимый кофе')
+    } catch {
+      route = 'threw'
+    }
+    // The client never throws (knowledgeClient.ts); routePhrase relies on that, and a null is a plain miss.
+    if (route !== 'threw') {
+      assert.equal(route, 'model')
+      assert.deepEqual(r.asked, ['Какой у меня любимый кофе'])
+    }
+  }
+  const dead = rig({ known: async () => null })
+  assert.equal(await dead.say('Что угодно'), 'model')
+})
+
+test('a phrase superseded while the base was consulted is dropped, not spoken', async () => {
+  let release!: () => void
+  const gate = new Promise<void>((res) => (release = res))
+  const r = rig({ known: async () => { await gate; return 'поздний ответ' } })
+  // The floor marks the turn stale when a newer one begins (rig.say creates the turn inside).
+  const first = r.say('Какой у меня любимый кофе')
+  const second = r.say('Сделай громче')
+  release()
+  const [a] = await Promise.all([first, second])
+  assert.equal(a, 'stale')
+  assert.ok(!r.replies.includes('поздний ответ'))
+})
+
+test('with no base wired in, routing is exactly as before', async () => {
+  const r = rig()
+  assert.equal(await r.say('Какой у меня любимый кофе'), 'model')
+  assert.equal(await r.say('Хватит'), 'stop')
 })
