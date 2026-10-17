@@ -20,7 +20,8 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
 import { open, readdir, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import * as nodePath from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** The project this bridge lives in — the one folder allowed by default. */
@@ -95,9 +96,9 @@ export function redact(text) {
 
 export class Refusal extends Error {}
 
-const inside = (root, p) => {
-  const rel = relative(root, p)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+const inside = (root, p, path = nodePath) => {
+  const rel = path.relative(root, p)
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
 }
 
 /**
@@ -106,20 +107,32 @@ const inside = (root, p) => {
  * `..` is refused as written, not merely resolved away; symbolic links and
  * junctions are followed and the real target checked again, so a link inside
  * the project that points at the home directory leads nowhere.
+ *
+ * `path` is the platform's own unless a test passes `path.posix` or
+ * `path.win32` to check the other one's rules.
  */
-export function resolveSafe(input, roots) {
-  const raw = String(input ?? '').trim() || '.'
+export function resolveSafe(input, roots, path = nodePath) {
+  let raw = String(input ?? '').trim() || '.'
   if (raw.length > 400 || raw.includes('\0')) throw new Refusal('Недопустимый путь.')
   // UNC shares, device paths, and "C:file" (relative to a drive's cwd).
   if (/^[\\/]{2}/.test(raw) || /^[a-z]:(?![\\/])/i.test(raw)) throw new Refusal('Такие пути не поддерживаются.')
+  if (path.sep === '/') {
+    // On Linux and macOS "C:\Windows\…" is not absolute but one odd file name,
+    // which would land inside the project; a drive path is never in reach here.
+    if (/^[a-z]:/i.test(raw)) throw new Refusal('Этот путь вне разрешённых папок.')
+    // And a backslash is an ordinary character, so "\etc\passwd" or ".\.env"
+    // would slip past the root and secret checks as one name. The model writes
+    // Windows separators often enough; read them as separators.
+    raw = raw.replaceAll('\\', '/')
+  }
   if (raw.split(/[\\/]+/).includes('..')) throw new Refusal('Переход в родительскую папку через «..» запрещён.')
 
-  const candidate = isAbsolute(raw) ? resolve(raw) : resolve(roots[0], raw)
-  const root = roots.find((r) => inside(r, candidate))
+  const candidate = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(roots[0], raw)
+  const root = roots.find((r) => inside(r, candidate, path))
   if (!root) throw new Refusal('Этот путь вне разрешённых папок.')
 
   const guard = (r, p) => {
-    for (const part of relative(r, p).split(sep)) {
+    for (const part of path.relative(r, p).split(path.sep)) {
       if (part && isSecretName(part)) throw new Refusal('Это закрытый файл: ключи, пароли и токены не читаются.')
     }
   }
@@ -129,12 +142,12 @@ export function resolveSafe(input, roots) {
   let realRoot = root
   if (existsSync(candidate)) {
     real = realpathSync.native(candidate)
-    realRoot = roots.find((r) => inside(r, real))
+    realRoot = roots.find((r) => inside(r, real, path))
     if (!realRoot) throw new Refusal('Ссылка ведёт за пределы разрешённых папок.')
     // And the name it really has: a link called notes.txt onto .env is .env.
     guard(realRoot, real)
   }
-  return { abs: real, root: realRoot, rel: relative(realRoot, real) || '.' }
+  return { abs: real, root: realRoot, rel: path.relative(realRoot, real) || '.' }
 }
 
 /** The display form of a path: relative to its root, forward slashes. */

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { CHECKS, Refusal, createComputer, isSecretName, redact, resolveSafe, summariseCheck } from '../bridge/computer.mjs'
 
 // A scratch project, and a folder beside it that must stay out of reach.
@@ -61,6 +61,34 @@ test('UNC, device and drive-relative paths are refused', () => {
   assert.throws(() => resolveSafe('\\\\server\\share\\x', [root]), Refusal)
   assert.throws(() => resolveSafe('//server/share', [root]), Refusal)
   assert.throws(() => resolveSafe('C:secret.txt', [root]), Refusal)
+})
+
+// On Linux a backslash is not a separator, so "C:\…" used to resolve to one
+// odd file name inside the project. These run the POSIX rules everywhere.
+const posixRoot = '/nonexistent-jarvis-root/project'
+
+test('on POSIX, Windows drive paths are refused, whichever slash they use', () => {
+  for (const p of ['C:\\Windows\\System32\\drivers\\etc\\hosts', 'C:/Windows/System32/drivers/etc/hosts', 'd:\\x']) {
+    assert.throws(() => resolveSafe(p, [posixRoot], posix), Refusal, p)
+  }
+})
+
+test('on POSIX, a leading backslash is the filesystem root, not a name in the project', () => {
+  assert.throws(() => resolveSafe('\\etc\\passwd', [posixRoot], posix), Refusal)
+})
+
+test('on POSIX, backslashes are separators for the root, ".." and secret checks', () => {
+  assert.equal(resolveSafe('src\\lib', [posixRoot], posix).rel, 'src/lib')
+  assert.equal(resolveSafe('/nonexistent-jarvis-root/project\\src', [posixRoot], posix).rel, 'src')
+  assert.throws(() => resolveSafe('src\\..\\..\\outside', [posixRoot], posix), Refusal)
+  for (const p of ['.\\.env', '.git\\config', 'docs\\.env.local']) assert.throws(() => resolveSafe(p, [posixRoot], posix), Refusal, p)
+})
+
+test('Windows separators work on this platform too, and still cannot escape', async () => {
+  assert.equal(resolveSafe('src\\lib', [root]).rel, join('src', 'lib'))
+  assert.throws(() => resolveSafe('.\\.env', [root]), Refusal)
+  assert.throws(() => resolveSafe('escape\\private.txt', [root]), Refusal)
+  await refused(pc().readFile('escape\\private.txt'))
 })
 
 test('a link that leads out of the project is refused', async () => {
