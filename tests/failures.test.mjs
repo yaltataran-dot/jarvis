@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { describeFailure, isRateLimit, rateLimitMessage, rateLimitReset, turnFailed } from '../bridge/failures.mjs'
 
 test('an API error reported as a "successful" result is a failure', () => {
@@ -50,16 +51,66 @@ test('the usage limit is told apart from other failures, in every shape it arriv
 
 test('the time the limit lifts is read from the result, as the next time that clock comes round', () => {
   const at = (h, m) => new Date(2026, 9, 15, h, m)
-  const r = rateLimitReset({ result: 'You\'ve hit your session limit · resets 10:50pm (Europe/Moscow)' }, at(20, 0))
+  // Named zone: Moscow's clock, whatever this machine's is (UTC+3 all year).
+  const r = rateLimitReset({ result: 'You\'ve hit your session limit · resets 10:50pm (Europe/Moscow)' }, new Date(Date.UTC(2026, 9, 15, 17, 0)))
   assert.equal(r.clock, '22:50')
-  assert.equal(r.until, new Date(2026, 9, 15, 22, 50).getTime())
-  // Already past today: tomorrow.
+  assert.equal(r.until, Date.UTC(2026, 9, 15, 19, 50))
+  // No zone: this machine's clock, as before. Already past today: tomorrow.
   const next = rateLimitReset({ result: 'resets 9am' }, at(20, 0))
   assert.equal(next.clock, '9:00')
   assert.equal(next.until, new Date(2026, 9, 16, 9, 0).getTime())
   assert.equal(rateLimitReset({ result: 'resets 12am' }, at(20, 0)).clock, '0:00')
   assert.equal(rateLimitReset({ result: 'You have hit a limit' }, at(20, 0)), null)
   assert.equal(rateLimitReset({}, at(20, 0)), null)
+})
+
+test('a reset time with a zone is read in that zone, not on the server clock', () => {
+  const moscow2am = { result: "You've hit your session limit · resets 2am (Europe/Moscow)" }
+  // 15:20 UTC is 18:20 in Moscow: 2am Moscow comes round at 23:00 UTC the same day.
+  const r = rateLimitReset(moscow2am, new Date(Date.UTC(2026, 9, 17, 15, 20)))
+  assert.deepEqual(r, { until: Date.UTC(2026, 9, 17, 23, 0), clock: '2:00' })
+  // 23:30 UTC is already 2:30 in Moscow: the next 2am is a day on.
+  assert.equal(rateLimitReset(moscow2am, new Date(Date.UTC(2026, 9, 17, 23, 30))).until, Date.UTC(2026, 9, 18, 23, 0))
+  // Exactly at the reset moment: it counts as passed, as without a zone.
+  assert.equal(rateLimitReset(moscow2am, new Date(Date.UTC(2026, 9, 17, 23, 0))).until, Date.UTC(2026, 9, 18, 23, 0))
+  // 24-hour times and minutes, in a zone behind UTC.
+  assert.equal(rateLimitReset({ result: 'resets 14:05 (America/New_York)' }, new Date(Date.UTC(2026, 6, 1, 12, 0))).until, Date.UTC(2026, 6, 1, 18, 5))
+  assert.equal(rateLimitReset({ result: 'resets 12pm (UTC)' }, new Date(Date.UTC(2026, 6, 1, 13, 0))).until, Date.UTC(2026, 6, 2, 12, 0))
+})
+
+test('a reset across a DST change lands on the zone\'s new offset', () => {
+  // New York leaves summer time on 1 November 2026 at 2am: 9am that day is UTC-5.
+  const r = rateLimitReset({ result: 'resets 9am (America/New_York)' }, new Date(Date.UTC(2026, 9, 31, 20, 0)))
+  assert.equal(r.until, Date.UTC(2026, 10, 1, 14, 0))
+  // And into summer time on 8 March 2026: 9am is UTC-4.
+  assert.equal(rateLimitReset({ result: 'resets 9am (America/New_York)' }, new Date(Date.UTC(2026, 2, 7, 20, 0))).until, Date.UTC(2026, 2, 8, 13, 0))
+})
+
+test('an unknown zone is read on this machine\'s clock, as a time with none', () => {
+  const now = new Date(2026, 9, 15, 20, 0)
+  const plain = rateLimitReset({ result: 'resets 10:50pm' }, now)
+  assert.deepEqual(rateLimitReset({ result: 'resets 10:50pm (Mars/Olympus)' }, now), plain)
+  assert.deepEqual(rateLimitReset({ result: 'resets 10:50pm (not a zone)' }, now), plain)
+  assert.equal(rateLimitReset({ result: 'resets 25:00 (Europe/Moscow)' }, now), null)
+  assert.equal(rateLimitReset({ result: 'resets 10:75 (Europe/Moscow)' }, now), null)
+  assert.equal(rateLimitReset({ result: 'resets soon (Europe/Moscow)' }, now), null)
+})
+
+test('a zoned reset gives the same instant whatever zone the machine is in', () => {
+  const src = `import { rateLimitReset } from ${JSON.stringify(new URL('../bridge/failures.mjs', import.meta.url).href)}
+    const r = rateLimitReset({ result: 'resets 2am (Europe/Moscow)' }, new Date(Date.UTC(2026, 9, 17, 15, 20)))
+    process.stdout.write(String(r.until))`
+  for (const TZ of ['UTC', 'Europe/Moscow', 'America/Los_Angeles', 'Asia/Tokyo']) {
+    const out = spawnSync(process.execPath, ['--input-type=module', '-e', src], { env: { ...process.env, TZ }, encoding: 'utf8' })
+    assert.equal(out.status, 0, out.stderr)
+    assert.equal(Number(out.stdout), Date.UTC(2026, 9, 17, 23, 0), `TZ=${TZ}`)
+  }
+})
+
+test('a far reset is reported as it is; capping the pause is the caller\'s', () => {
+  // 18:20 in Moscow: 2pm is almost a day away, more than server.mjs will wait.
+  const r = rateLimitReset({ result: 'resets 2pm (Europe/Moscow)' }, new Date(Date.UTC(2026, 9, 17, 15, 20)))
+  assert.equal(r.until, Date.UTC(2026, 9, 18, 11, 0))
 })
 
 test('the limit sentence names the time when it is known', () => {

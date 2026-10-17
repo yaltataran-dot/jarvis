@@ -52,11 +52,14 @@ export function isRateLimit(result, assistantError) {
  * "You've hit your session limit · resets 10:50pm (Europe/Moscow)".
  *
  * `clock` is the wall-clock time as written ("22:50"); `until` the next moment
- * that time comes round on this machine's clock, which is the user's own.
+ * that time comes round in the zone named after it. A bridge on a server in
+ * UTC would otherwise read Moscow's 2am as its own, hours late. With no zone
+ * named, or one this Node does not know, the time is read on this machine's
+ * clock, as before.
  * Null when the text gives no time — the caller then pauses briefly instead.
  */
 export function rateLimitReset(result, now = new Date()) {
-  const m = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(String(result?.result ?? ''))
+  const m = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([A-Za-z][\w+-]*(?:\/[\w+-]+)*)\))?/i.exec(String(result?.result ?? ''))
   if (!m) return null
   let h = Number(m[1])
   const min = Number(m[2] ?? 0)
@@ -64,10 +67,51 @@ export function rateLimitReset(result, now = new Date()) {
   if (ap === 'pm' && h < 12) h += 12
   if (ap === 'am' && h === 12) h = 0
   if (h > 23 || min > 59) return null
+  const clock = `${h}:${String(min).padStart(2, '0')}`
+  const zone = m[4] && knownZone(m[4])
+  if (zone) return { until: nextInZone(zone, h, min, now.getTime()), clock }
   const at = new Date(now)
   at.setHours(h, min, 0, 0)
   if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1)
-  return { until: at.getTime(), clock: `${h}:${String(min).padStart(2, '0')}` }
+  return { until: at.getTime(), clock }
+}
+
+/** The zone's own spelling when Intl knows it, else null. */
+function knownZone(name) {
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: name }).resolvedOptions().timeZone
+  } catch {
+    return null
+  }
+}
+
+/** The wall clock in `zone` at instant `t`, as a UTC timestamp of the same digits. */
+function wallClock(zone, t) {
+  const parts = {}
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone, hourCycle: 'h23',
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+  })
+  for (const p of fmt.formatToParts(new Date(t))) parts[p.type] = Number(p.value)
+  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second)
+}
+
+/**
+ * The instant `zone`'s clocks read the given wall time. Intl only formats, so
+ * guess with the offset at the wall time read as UTC, then correct once with
+ * the offset at the guess — that second step is what crosses a DST change.
+ */
+function instantInZone(zone, wall) {
+  const guess = wall - (wallClock(zone, wall) - wall)
+  return wall - (wallClock(zone, guess) - guess)
+}
+
+/** The next instant after `now` that `zone`'s clocks read h:min. */
+function nextInZone(zone, h, min, now) {
+  const today = new Date(wallClock(zone, now))
+  const wall = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), h, min)
+  const at = instantInZone(zone, wall)
+  return at > now ? at : instantInZone(zone, wall + 24 * 60 * 60_000)
 }
 
 /** The limit's sentence, with the time it lifts when that is known. */
