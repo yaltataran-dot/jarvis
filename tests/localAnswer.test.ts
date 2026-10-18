@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { localAnswer, localKind, sayClock } from '../src/lib/localAnswer.ts'
 
 const state = (over: Partial<{ now: Date; voice: string; connected: boolean }> = {}) => ({
@@ -22,8 +23,57 @@ test('the questions it owns are answered from the page, in words', () => {
   assert.equal(localAnswer('Ты на связи?', state({ connected: false })), 'Связь с мостом потеряна, восстанавливаю.')
 })
 
+test('the time is answered however it is asked for, "точное" included', () => {
+  const at905 = state({ now: new Date(2026, 9, 18, 9, 5) })
+  for (const said of [
+    'Сколько сейчас времени?',
+    'Который час?',
+    'Скажи точное время.',
+    'Какое сейчас точное время?',
+    'Сколько точно времени?',
+    'Сколько сейчас точного времени?',
+    'Подскажи время',
+    'Назови точное время',
+    'Время?',
+    'Текущее время',
+    'Который сейчас час точно?',
+    'Джарвис, сколько время сейчас?',
+  ]) {
+    assert.equal(localKind(said), 'time', said)
+    assert.equal(localAnswer(said, at905), 'Девять ноль пять.', said)
+  }
+})
+
+test('the date and the time together, when both are asked for', () => {
+  const now = new Date(2026, 9, 18, 23, 59)
+  assert.equal(localAnswer('Какие сейчас дата и время?', state({ now })), 'Сейчас двадцать три пятьдесят девять, воскресенье, восемнадцатое октября.')
+  assert.equal(localAnswer('Скажи время и дату', state({ now })), null, 'not one of the phrasings: left to the model')
+  assert.equal(localAnswer('Какая сегодня дата?', state({ now })), 'Сегодня воскресенье, восемнадцатое октября.')
+})
+
+test('the clock is the machine\'s own, in its own zone: nothing is fixed in the code', () => {
+  // One instant, read by the page in three zones. Each answer is that zone's wall clock.
+  const src = `import { localAnswer } from ${JSON.stringify(new URL('../src/lib/localAnswer.ts', import.meta.url).href)}
+    const now = new Date(Date.UTC(2026, 9, 18, 6, 5))
+    process.stdout.write(localAnswer('Который час?', { now, voice: '', connected: true }) + '|' + localAnswer('Какая сегодня дата?', { now, voice: '', connected: true }))`
+  const want: Record<string, string> = {
+    UTC: 'Шесть ноль пять.|Сегодня воскресенье, восемнадцатое октября.',
+    'Europe/Moscow': 'Девять ноль пять.|Сегодня воскресенье, восемнадцатое октября.',
+    'America/Los_Angeles': 'Двадцать три ноль пять.|Сегодня суббота, семнадцатое октября.',
+  }
+  for (const [TZ, expected] of Object.entries(want)) {
+    const out = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', src], { env: { ...process.env, TZ }, encoding: 'utf8' })
+    assert.equal(out.status, 0, out.stderr)
+    assert.equal(out.stdout, expected, `TZ=${TZ}`)
+  }
+})
+
 test('anything more than the bare question goes to the model', () => {
   for (const said of [
+    'Какая погода в Москве?',
+    'Точное время в Москве',
+    'Сколько времени займёт дорога?',
+    'Время в Токио',
     'Который час в Токио?',
     'Как тебя зовут по-английски?',
     'Какое число будет через неделю?',

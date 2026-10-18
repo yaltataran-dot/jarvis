@@ -182,6 +182,20 @@ test('the time, the date and his name are answered by the page, with no model tu
   assert.deepEqual(r.asked, [])
 })
 
+test('time and date questions never reach the model; the weather still does', async () => {
+  const r = rig()
+  assert.equal(await r.say('Сколько сейчас времени?'), 'local')
+  assert.equal(await r.say('Который час?'), 'local')
+  assert.equal(await r.say('Скажи точное время.'), 'local')
+  assert.equal(await r.say('Какая сегодня дата?'), 'local')
+  assert.equal(await r.say('Какая погода в Москве?'), 'model')
+  assert.deepEqual(r.replies, ['Пятнадцать тридцать шесть.', 'Пятнадцать тридцать шесть.', 'Пятнадцать тридцать шесть.', 'Сегодня среда, четырнадцатое октября.'])
+  // Only the weather was asked — and only it could have used a search.
+  assert.deepEqual(r.asked, ['Какая погода в Москве?'])
+  assert.equal(r.asks(), 1)
+  assert.deepEqual(r.music, [])
+})
+
 test('anything more than the bare question still goes to the model, and a stop is still a stop', async () => {
   const r = rig()
   assert.equal(await r.say('Который час в Токио?'), 'model')

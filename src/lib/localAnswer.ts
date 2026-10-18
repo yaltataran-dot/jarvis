@@ -20,15 +20,16 @@ export type LocalState = {
   connected: boolean
 }
 
-export type LocalKind = 'name' | 'time' | 'date' | 'voice' | 'hearing' | 'link'
+export type LocalKind = 'name' | 'time' | 'datetime' | 'date' | 'voice' | 'hearing' | 'link'
 
 /**
  * What may stand in front of the question without changing it: his name, the
- * brand, "скажи", "пожалуйста" — and the fillers of spoken Russian, "ну",
- * "а", "слушай", "эм". Measured before they were allowed: "Слушай, который
- * час?" and "А который час?" went to the model, which does not know the time.
+ * brand, "скажи", "назови", "пожалуйста" — and the fillers of spoken Russian,
+ * "ну", "а", "слушай", "эм". Measured before they were allowed: "Слушай,
+ * который час?" and "А который час?" went to the model, which does not know
+ * the time.
  */
-const LEAD = /^(?:джарвис|юг трансфер|скажи(?:те)?|подскажи(?:те)?|пожалуйста|ну|а|и|слушай|слышь|эй|так|ка|э+м*|м+)(?: |$)/
+const LEAD = /^(?:джарвис|юг трансфер|скажи(?:те)?|подскажи(?:те)?|назови(?:те)?|пожалуйста|ну|а|и|слушай|слышь|эй|так|ка|э+м*|м+)(?: |$)/
 
 /** Lower case, ё as е, no punctuation, no polite padding, no fillers in front. */
 export function normalise(said: string): string {
@@ -49,8 +50,15 @@ const RULES: Array<[LocalKind, RegExp]> = [
   ['name', /^(?:как тебя зовут|как твое имя|кто ты(?: такой)?|представься)$/],
   [
     'time',
-    // "Сколько время" is how it is said, whatever the grammar books say.
-    /^(?:(?:сейчас )?который (?:сейчас )?час(?: сейчас)?|(?:сейчас )?сколько (?:сейчас )?(?:времени|время)(?: сейчас)?|время сколько(?: сейчас)?|какое сейчас время|сколько на часах)$/,
+    // "Сколько время" is how it is said, whatever the grammar books say. So is
+    // "точное время" — "Скажи точное время", "Сколько точно времени?" and a
+    // bare "Время?" went to the model, which answered that it could not see
+    // the machine's clock.
+    /^(?:(?:сейчас )?который (?:сейчас )?час(?: сейчас)?(?: точно)?|(?:сейчас )?сколько (?:сейчас )?(?:точно |точного )?(?:времени|время)(?: сейчас)?(?: точно)?|время сколько(?: сейчас)?|(?:какое )?(?:сейчас )?(?:точное |текущее )?время(?: сейчас)?|сколько на часах)$/,
+  ],
+  [
+    'datetime',
+    /^(?:(?:какие |какая |какое )?(?:сегодня |сейчас )?(?:дата и время|время и дата|число и время)(?: сегодня| сейчас)?)$/,
   ],
   [
     'date',
@@ -102,6 +110,9 @@ const DAYS = [
   'двадцать девятое', 'тридцатое', 'тридцать первое',
 ]
 
+/** "воскресенье, восемнадцатое октября" — the page's own calendar, in its own zone. */
+const sayDate = (d: Date) => `${WEEKDAYS[d.getDay()]}, ${DAYS[d.getDate()]} ${MONTHS[d.getMonth()]}`
+
 /**
  * The spoken answer, or null when the phrase is not one of these questions —
  * or is, but the page has nothing true to say (no voice known yet), in which
@@ -114,8 +125,10 @@ export function localAnswer(said: string, s: LocalState): string | null {
       return 'Юг-Трансфер, ваш голосовой помощник.'
     case 'time':
       return `${capital(sayClock(s.now.getHours(), s.now.getMinutes()))}.`
+    case 'datetime':
+      return `Сейчас ${sayClock(s.now.getHours(), s.now.getMinutes())}, ${sayDate(s.now)}.`
     case 'date':
-      return `Сегодня ${WEEKDAYS[s.now.getDay()]}, ${DAYS[s.now.getDate()]} ${MONTHS[s.now.getMonth()]}.`
+      return `Сегодня ${sayDate(s.now)}.`
     case 'voice': {
       const name = s.voice.replace(/\(.*?\)/g, '').trim()
       if (!name) return null
