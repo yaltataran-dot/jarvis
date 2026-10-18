@@ -25,7 +25,7 @@ folders is the last step, once the boundaries hold.
 | **state** | The UI store (zustand) | `store.ts` |
 | **contracts** | Shapes the page and the bridge agree on | `shared/*` |
 | **lang** | Word lists and text matching shared by voice and turn routing | `stopWords`, `echo` |
-| **platform** | What this browser and this bridge can do; fault log | `capabilities`, `faultLog` |
+| **platform** | What this browser and this bridge can do; fault log; diagnostic breadcrumbs | `capabilities`, `faultLog`, `trace` |
 | **voice** | Microphone, recognisers, phrase assembly, barge-in, speech synthesis, the voice loop's recovery | `voice`, `voiceCore`, `voiceSupervisor`, `voiceSlot`, `scribeVoice`, `deepgramVoice`, `browserVoice`, `pcm`, `pcmCapture`, `audio`, `audioStart`, `vad`, `bargeIn`, `ledger`, `micErrors`, `lifecycle`, `tts`, `kokoro`, `speechText`, `sentences`, `screenWake`, `sfx`, `clap`, `voiceWaves`, `fillers` |
 | **core** | The turn: one question on the floor, routing, the connection to the bridge and its recovery | `brain`, `bridge`, `anthropic`, `redial`, `resume`, `linkStatus`, `floor`, `turnRoute`, `turnLog`, `aside`, `localAnswer` |
 | **integrations** | Calendar, music, knowledge base client, camera and hand tracking | `calendarFlow`, `calendarIntent`, `calendarTime`, `calendarCheck`, `calendarClient`, `music`, `musicIntent`, `yandexMusic`, `knowledgeClient`, `knownFetch`, `camera`, `hands`, `oneEuro` |
@@ -53,9 +53,10 @@ fails if one is added or one is fixed without being struck off.
 
 1. `brain.ts`, `bridge.ts` → `store.ts`: the panel and blade shapes live in the
    UI store. They belong in contracts.
-2. `voice.ts`, `knowledgeClient.ts` → `bridge.ts`: diagnostic breadcrumbs go
-   through the transport. A small trace sink that the transport registers with
-   removes the dependency.
+
+Paid: `voice.ts`, `knowledgeClient.ts` → `bridge.ts` (diagnostic breadcrumbs
+went through the transport). They now call `trace.ts`, whose sink the
+transport registers.
 
 `App.tsx` is the composition root and also, today, the place where the voice
 events, the turn pipeline (`respond`) and the page lifecycle are wired. Those

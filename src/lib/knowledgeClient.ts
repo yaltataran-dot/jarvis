@@ -1,5 +1,5 @@
 import { BRIDGE_HTTP_URL } from '../config'
-import { trace } from './bridge'
+import { trace } from './trace'
 import { fetchKnown } from './knownFetch'
 
 /** Ask the bridge whether the user has already told JARVIS the answer (bridge/knowledgeRoute.mjs). Read-only; never throws. */

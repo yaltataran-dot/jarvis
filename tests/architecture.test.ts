@@ -19,14 +19,14 @@ type Module = 'config' | 'state' | 'contracts' | 'lang' | 'platform' | 'voice' |
 
 const LIB: Record<string, Module> = {
   stopWords: 'lang', echo: 'lang',
-  capabilities: 'platform', faultLog: 'platform',
+  capabilities: 'platform', faultLog: 'platform', trace: 'platform',
   voice: 'voice', voiceCore: 'voice', voiceSupervisor: 'voice', voiceSlot: 'voice', scribeVoice: 'voice',
   deepgramVoice: 'voice', browserVoice: 'voice', pcm: 'voice', pcmCapture: 'voice', audio: 'voice',
   audioStart: 'voice', vad: 'voice', bargeIn: 'voice', ledger: 'voice', micErrors: 'voice', lifecycle: 'voice',
   tts: 'voice', kokoro: 'voice', speechText: 'voice', sentences: 'voice', screenWake: 'voice', sfx: 'voice',
   clap: 'voice', voiceWaves: 'voice', fillers: 'voice',
   brain: 'core', bridge: 'core', anthropic: 'core', redial: 'core', resume: 'core', linkStatus: 'core',
-  floor: 'core', turnRoute: 'core', turnLog: 'core', aside: 'core', localAnswer: 'core', trace: 'core',
+  floor: 'core', turnRoute: 'core', turnLog: 'core', aside: 'core', localAnswer: 'core',
   calendarFlow: 'integrations', calendarIntent: 'integrations', calendarTime: 'integrations',
   calendarCheck: 'integrations', calendarClient: 'integrations', music: 'integrations', musicIntent: 'integrations',
   yandexMusic: 'integrations', knowledgeClient: 'integrations', knownFetch: 'integrations', camera: 'integrations',
@@ -54,7 +54,7 @@ const MAY: Record<Module, Module[]> = {
   platform: ['config', 'contracts'],
   voice: ['lang', 'platform', 'config', 'contracts'],
   core: ['lang', 'platform', 'config', 'contracts'],
-  integrations: ['lang', 'config', 'contracts'],
+  integrations: ['lang', 'platform', 'config', 'contracts'],
   ui: ['state', 'config', 'contracts', 'core', 'voice', 'integrations', 'lang', 'platform'],
   app: ['config', 'state', 'contracts', 'lang', 'platform', 'voice', 'core', 'integrations', 'ui'],
 }
@@ -64,9 +64,6 @@ const DEBTS = new Set<string>([
   // The transport takes the panel and blade shapes from the UI store (to move into contracts).
   'src/lib/brain.ts -> src/store.ts',
   'src/lib/bridge.ts -> src/store.ts',
-  // Diagnostic breadcrumbs reach the bridge through the transport itself (to become a trace sink).
-  'src/lib/knowledgeClient.ts -> src/lib/bridge.ts',
-  'src/lib/voice.ts -> src/lib/bridge.ts',
 ])
 
 type Edge = { from: string; to: string; typeOnly: boolean }

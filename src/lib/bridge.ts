@@ -5,6 +5,7 @@ import { BRIDGE_WS_URL, LANG } from '../config'
 import { makeTurnLog } from './turnLog'
 import { createResumeClient } from './resume'
 import { createLink } from './redial'
+import { setTraceSink } from './trace'
 
 /** The page's own failure sentences, in the language he answers in. */
 const SAY =
@@ -68,6 +69,8 @@ const turnLog = makeTurnLog({
   },
 })
 if (TRACE && typeof window !== 'undefined') (window as unknown as { __turnlog?: unknown }).__turnlog = turnLog
+// Breadcrumbs from modules that do not import the transport (trace.ts) come here too.
+setTraceSink(trace)
 
 /** Anything the bridge sends. Deliberately loose — a frame from a future
  *  bridge build should be ignored, not crash the turn. */
