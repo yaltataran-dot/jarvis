@@ -1,6 +1,6 @@
 import type { AskHandlers } from './anthropic'
 import type { AsideItem } from './aside'
-import type { Blade, Panel } from '../store'
+import type { Blade, Panel } from '../../shared/ui'
 import { BRIDGE_WS_URL, LANG } from '../config'
 import { makeTurnLog } from './turnLog'
 import { createResumeClient } from './resume'

@@ -3,7 +3,7 @@ import * as direct from './anthropic'
 import * as bridge from './bridge'
 import { formatAsides, type AsideItem } from './aside'
 import type { AskHandlers, Msg } from './anthropic'
-import type { Blade, Panel } from '../store'
+import type { Blade, Panel } from '../../shared/ui'
 
 export type { AskHandlers, Msg }
 export type { ConnectionState } from './bridge'

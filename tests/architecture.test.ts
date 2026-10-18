@@ -60,11 +60,7 @@ const MAY: Record<Module, Module[]> = {
 }
 
 /** Crossings that exist today, to be removed (docs/ARCHITECTURE.md, "Debts"). Never add to this list. */
-const DEBTS = new Set<string>([
-  // The transport takes the panel and blade shapes from the UI store (to move into contracts).
-  'src/lib/brain.ts -> src/store.ts',
-  'src/lib/bridge.ts -> src/store.ts',
-])
+const DEBTS = new Set<string>([])
 
 type Edge = { from: string; to: string; typeOnly: boolean }
 

@@ -51,12 +51,15 @@ app ──▶ ui ──▶ core, voice, integrations ──▶ lang, platform, c
 Crossings that exist today and are to be removed; the test lists them and
 fails if one is added or one is fixed without being struck off.
 
-1. `brain.ts`, `bridge.ts` → `store.ts`: the panel and blade shapes live in the
-   UI store. They belong in contracts.
+None today.
 
-Paid: `voice.ts`, `knowledgeClient.ts` → `bridge.ts` (diagnostic breadcrumbs
-went through the transport). They now call `trace.ts`, whose sink the
-transport registers.
+Paid:
+
+- `voice.ts`, `knowledgeClient.ts` → `bridge.ts` (diagnostic breadcrumbs went
+  through the transport). They now call `trace.ts`, whose sink the transport
+  registers.
+- `brain.ts`, `bridge.ts` → `store.ts` (the panel and blade shapes lived in the
+  UI store). They are in `shared/ui.ts`; `store.ts` re-exports them.
 
 `App.tsx` is the composition root and also, today, the place where the voice
 events, the turn pipeline (`respond`) and the page lifecycle are wired. Those
