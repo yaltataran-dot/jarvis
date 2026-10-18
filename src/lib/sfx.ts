@@ -1,3 +1,5 @@
+import { within } from './audioStart'
+
 /**
  * Sound design.
  *
@@ -61,7 +63,10 @@ export async function unlockAudio(): Promise<void> {
   const c = audio()
   if (c.state === 'suspended') {
     try {
-      await c.resume()
+      // Bounded: a resume the browser will not allow is held, not rejected,
+      // and the power-up awaiting it would sit with its double-press guard
+      // latched — every later press ignored (audioStart.ts).
+      await within(c.resume(), 'resume')
     } catch {
       /**
        * Swallowed on purpose, now that a clap can start the assistant.

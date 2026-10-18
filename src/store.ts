@@ -249,6 +249,18 @@ type State = {
    * on in its phase, and nothing else stops.
    */
   errorKind: 'fault' | 'service'
+  /**
+   * Whether the realtime recogniser is actually hearing (voiceSupervisor.ts).
+   * The status must not say "waiting for his name" while nothing listens.
+   */
+  voiceHealth: 'ok' | 'recovering' | 'down'
+  /**
+   * The connection to the bridge (linkStatus.ts): a drop being mended is
+   * shown quietly, not as an error; only a lasting outage is said plainly.
+   */
+  link: 'ok' | 'reconnecting' | 'down'
+  /** Something worth knowing about the last reconnect, on the same quiet line. */
+  linkNote: string | null
   connected: string[]
   /** Name of the speech-synthesis voice in use, shown in the HUD. */
   voice: string
@@ -295,6 +307,9 @@ type State = {
   setCaption: (c: string) => void
   setActiveTool: (t: string | null) => void
   setError: (e: string | null, kind?: 'fault' | 'service') => void
+  setVoiceHealth: (h: 'ok' | 'recovering' | 'down') => void
+  setLink: (l: 'ok' | 'reconnecting' | 'down') => void
+  setLinkNote: (n: string | null) => void
   setConnected: (c: string[]) => void
   pushTurn: (t: Turn) => void
   appendToLastTurn: (text: string) => void
@@ -316,6 +331,9 @@ export const useStore = create<State>((set) => ({
   activeTool: null,
   error: null,
   errorKind: 'fault',
+  voiceHealth: 'ok',
+  link: 'ok',
+  linkNote: null,
   connected: [],
   voice: '',
   gestures: false,
@@ -396,6 +414,9 @@ export const useStore = create<State>((set) => ({
   setCaption: (caption) => set({ caption }),
   setActiveTool: (activeTool) => set({ activeTool }),
   setError: (error, kind = 'fault') => set({ error, errorKind: kind }),
+  setVoiceHealth: (voiceHealth) => set({ voiceHealth }),
+  setLink: (link) => set({ link }),
+  setLinkNote: (linkNote) => set({ linkNote }),
   setConnected: (connected) => set({ connected }),
   pushTurn: (turn) => set((s) => ({ turns: [...s.turns.slice(-40), turn] })),
   appendToLastTurn: (text) =>

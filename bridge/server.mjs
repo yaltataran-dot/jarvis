@@ -16,14 +16,15 @@
  */
 
 import { WebSocketServer } from 'ws'
-import { STT_PATH, cleanKey, createSttProxy } from './deepgramProxy.mjs'
+import { STT_PATH, cleanKey, createSttProxy, keyProblem } from './deepgramProxy.mjs'
+import { createResumable, transcriptPath } from './resumable.mjs'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
@@ -905,6 +906,9 @@ function sttEngine() {
   return dg ? 'deepgram' : eleven ? 'elevenlabs' : null
 }
 
+/** Agent sessions a page may pick up again after its socket drops — see resumable.mjs. */
+const RESUMABLE = createResumable()
+
 const sttProxy = createSttProxy({
   key: deepgramKey,
   lang: LANG === 'ru' ? 'ru' : 'en',
@@ -1667,6 +1671,12 @@ if (TRACE) console.log('[jarvis] trace on — page steps print as [trace]')
   )
 }
 console.log(`[jarvis] recognition ${sttEngine() ?? 'browser engine (no Deepgram or ElevenLabs key)'}`)
+if (keyProblem(process.env.DEEPGRAM_API_KEY) === 'unusable') {
+  console.warn(
+    '[jarvis] DEEPGRAM_API_KEY is set but unusable (spaces, quotes or non-ASCII characters) — ' +
+      'Deepgram is off until the bare key from the Deepgram console is put in .env.bridge',
+  )
+}
 console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(
   `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED' : 'disabled'}` +
@@ -1753,7 +1763,9 @@ const AGENT_ENV = agentEnv(process.env)
 
 wss.on('connection', (socket, req) => {
   // Streaming recognition shares the port and the Origin check, not the agent.
-  if ((req.url ?? '/').split('?')[0] === STT_PATH) return sttProxy.accept(socket)
+  if ((req.url ?? '/').split('?')[0] === STT_PATH) {
+    return sttProxy.accept(socket, new URL(req.url ?? '/', 'http://bridge').searchParams.get('why') ?? '')
+  }
   console.log('[jarvis] client connected')
 
   // Answer the HUD straight away rather than making it wait for the agent's
@@ -2005,6 +2017,10 @@ wss.on('connection', (socket, req) => {
   let sessionGen = 0
   /** From the init message, so a replacement session keeps the conversation. */
   let sessionId = null
+  /** This connection, as resumable.mjs knows it: ended if another socket resumes its session. */
+  const owner = { close: () => socket.close(4002, 'resumed elsewhere') }
+  /** A question has been asked here: from then on this socket's session is its own, not to be swapped. */
+  let asked = false
   /** The login this connection's session runs on — see accounts.mjs. */
   let account = ACCOUNTS.pick() ?? 'primary'
 
@@ -2139,7 +2155,9 @@ wss.on('connection', (socket, req) => {
         // A live session that would not start on the other login: leave that
         // login alone for a while, so the next turn does not open on it again.
         // A session closed under it (a switch, a page gone) is not its fault.
-        if (ACCOUNTS.switchable() && gen === sessionGen && !closed) {
+        // Not for a resumed session: a transcript that would not load is the
+        // conversation's fault, not the login's (the resume handler falls back).
+        if (ACCOUNTS.switchable() && gen === sessionGen && !closed && !resume) {
           ACCOUNTS.hold(on, Date.now() + ACCOUNT_DOWN_MS, null, 'down')
           console.warn(`[jarvis] login ${on} set aside for ${ACCOUNT_DOWN_MS / 60_000} min`)
         }
@@ -2382,7 +2400,12 @@ wss.on('connection', (socket, req) => {
               break
             }
             if (msg.subtype === 'init') {
-              if (typeof msg.session_id === 'string') sessionId = msg.session_id
+              if (typeof msg.session_id === 'string') {
+                sessionId = msg.session_id
+                // The page keeps this to ask for the conversation back after a drop.
+                RESUMABLE.issue(sessionId, account, owner)
+                send({ type: 'session', id: sessionId })
+              }
               // Servers report 'pending' until first use — they connect
               // lazily — so only drop the ones that are actually unusable.
               const usable = (msg.mcp_servers ?? [])
@@ -2550,6 +2573,13 @@ wss.on('connection', (socket, req) => {
       return
     }
 
+    // The page asking whether this socket still reaches us: after a VPN or
+    // network switch it can be open in name only (src/lib/redial.ts).
+    if (msg.type === 'ping') {
+      send({ type: 'pong' })
+      return
+    }
+
     if (msg.type === 'ask' && typeof msg.text === 'string' && TRACE) {
       console.log(
         `[jarvis] ask ${String(msg.id).slice(0, 12)} received (${msg.text.length} chars)` +
@@ -2567,7 +2597,67 @@ wss.on('connection', (socket, req) => {
       return
     }
 
+    // The page is back after its socket dropped and wants its conversation.
+    // Only before anything is asked here, and only a session this bridge
+    // handed out, to this login, within its time (resumable.mjs). Otherwise
+    // the fresh session stays and the page is told so — nothing is replayed.
+    if (msg.type === 'resume') {
+      let verdict = asked ? { ok: false, reason: 'already-asking' } : RESUMABLE.check(msg.id, account)
+      // Claude Code resumes from the transcript on disk; without it there is nothing to resume.
+      if (verdict.ok) {
+        const dir = ACCOUNTS.env(account, { ...AGENT_ENV }).CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+        if (!existsSync(transcriptPath(dir, homedir(), msg.id))) verdict = { ok: false, reason: 'no-transcript' }
+      }
+      if (!verdict.ok) {
+        console.log(`[jarvis] resume refused (${verdict.reason}) — new conversation`)
+        send({ type: 'resumed', ok: false })
+        return
+      }
+      // The old socket the server has not yet seen die: end it, so two sockets never share one session.
+      if (verdict.holder && verdict.holder !== owner) verdict.holder.close()
+      const replace = (resume) => {
+        const old = session
+        chan.closed = true
+        chan.deliver?.(null)
+        chan = { inbox: [], deliver: null, closed: false }
+        sessionGen++
+        try {
+          old?.close?.()
+        } catch {
+          // Already gone.
+        }
+        sessionId = resume
+        sessionEffort = EFFORT
+        startSession(resume)
+        return sessionGen
+      }
+      const wanted = msg.id
+      const gen = replace(wanted)
+      RESUMABLE.issue(wanted, account, owner)
+      // Said only once the resumed session has actually started. If it will not
+      // (a transcript that does not load), the page gets a fresh session and is
+      // told so — unless a question has meanwhile gone into this one, which then
+      // fails on its own and says why.
+      void Promise.resolve(session?.initializationResult?.()).then(
+        () => {
+          if (closed || gen !== sessionGen) return
+          console.log(`[jarvis] conversation resumed after reconnect${ACCOUNTS.switchable() ? ` (${account})` : ''}`)
+          send({ type: 'resumed', ok: true })
+        },
+        (err) => {
+          if (closed || gen !== sessionGen) return
+          console.warn(`[jarvis] resume failed (${String(err?.message ?? err).slice(0, 80)}) — new conversation`)
+          if (!asked) replace(null)
+          send({ type: 'resumed', ok: false })
+        },
+      )
+      return
+    }
+
     if (msg.type === 'ask' && typeof msg.text === 'string') {
+      asked = true
+      // Each question keeps the session resumable for another thirty minutes.
+      if (sessionId) RESUMABLE.issue(sessionId, account, owner)
       // Waits for the floor in turns.mjs: the turn before it is stopped and
       // has to report its end first, or its last tokens land on this one.
       // Measured before that wait existed: ask "one", interrupt, ask "two",
@@ -2598,6 +2688,8 @@ wss.on('connection', (socket, req) => {
   socket.on('close', (code) => {
     console.log(`[jarvis] client disconnected (code ${code})`)
     closed = true
+    // The conversation stays resumable for a while: a phone whose screen went off comes back.
+    if (sessionId) RESUMABLE.release(sessionId, owner)
     // Aborts a fallback answer in flight: nobody is left to hear it.
     turns.close()
     chan.closed = true

@@ -133,7 +133,7 @@ export function isConnected(): boolean {
  * Never fires on the direct path, which has no connection to lose.
  */
 export function watchConnection(
-  fn: (state: bridge.ConnectionState) => void,
+  fn: (state: bridge.ConnectionState, detail?: bridge.ConnectionDetail) => void,
 ): void {
   if (usingBridge) bridge.watchConnection(fn)
 }

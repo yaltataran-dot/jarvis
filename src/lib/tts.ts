@@ -11,6 +11,22 @@ import * as kokoro from './kokoro'
 import { caps } from './capabilities'
 import { prepareForSpeech } from './speechText'
 import { takeSentences } from './sentences'
+import { screenWake } from './screenWake'
+
+/** After a whole answer has been said, before the screen may sleep: covers the step to the next answer. */
+export const BETWEEN_ANSWERS_MS = 1500
+/**
+ * A speaker whose queue ran dry before its answer was over: a pause mid-answer
+ * — a search, a slow next sentence — during which the screen stays on.
+ *
+ * Not the normal way a speaker lets go. Every answer's speaker is ended by its
+ * turn (spk.end()) or cancelled (a stop, a superseding question, or a failed
+ * turn's floor release, which cancels it), and a turn itself fails after
+ * TURN_LIMIT_MS (180 s) in bridge.ts. This only catches a speaker nothing ever
+ * ends, so it sits above that limit: no real answer is cut short by it. It was
+ * 45 s, which let the screen dim in a long search mid-answer.
+ */
+export const QUIET_SPEAKER_MS = 200_000
 
 /**
  * Speech output.
@@ -550,6 +566,23 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
     for (const r of waiting) r()
   }
 
+  /**
+   * This answer's claim on the screen (screenWake.ts): taken when the speaker
+   * is made — the turn has begun, and the first word can be 20 s away — renewed
+   * at every real sound, kept through the pauses between sentences however long
+   * the model takes over the next one, and let go once the whole answer has
+   * been said, or at once on a stop. `ending` is set by end(): only then is an
+   * empty queue the end of the answer rather than a pause in it. Every hold is
+   * capped at QUIET_SPEAKER_MS, so a sound whose end never fires cannot keep
+   * the screen on for good.
+   */
+  const wakeOwner = {}
+  let ending = false
+  screenWake.hold(wakeOwner, QUIET_SPEAKER_MS)
+  const soundStarted = () => screenWake.hold(wakeOwner, QUIET_SPEAKER_MS)
+  /** The queue ran dry. The end of the answer, or a pause in one that never said it had ended. */
+  const queueDry = () => screenWake.letGo(wakeOwner, ending ? BETWEEN_ANSWERS_MS : QUIET_SPEAKER_MS)
+
   const enqueue = (sentence: string, priority = false) => {
     if (cancelled) return
     // Shape once here so both engines get the same text — stripped markdown,
@@ -626,6 +659,7 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
       }
     } finally {
       pumping = false
+      if (!cancelled && !queue.length) queueDry()
       if (cancelled || !queue.length) settleDrained()
     }
   }
@@ -736,6 +770,7 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
         started = true
         diag.started++
         diag.lastError = ''
+        soundStarted()
         if (watchdog) clearTimeout(watchdog)
         // Chrome stops speaking after roughly fifteen seconds unless the engine
         // is nudged. A pause/resume pair is the standard keepalive and is
@@ -855,6 +890,7 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
       audio.onplaying = () => {
         diag.started++
         diag.lastError = ''
+        soundStarted()
       }
       audio.onended = finish
       audio.onerror = () => {
@@ -890,12 +926,17 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
       for (const s of sentences) enqueue(s)
     },
     async end() {
+      ending = true
       if (buffer.trim()) {
         enqueue(buffer)
         buffer = ''
       }
       if (cancelled) return
-      if (!pumping && !queue.length) return
+      if (!pumping && !queue.length) {
+        // Already said in full: start the short wait before the screen may sleep.
+        queueDry()
+        return
+      }
       await new Promise<void>((resolve) => drained.push(resolve))
     },
     cancel() {
@@ -931,6 +972,8 @@ export function createSpeaker(options: { style?: SpeechStyle } = {}): Speaker {
         currentAudio = null
       }
       outLevel = 0
+      // Stopped: the screen goes back to its own timer at once.
+      screenWake.letGo(wakeOwner, 0)
       settleDrained()
     },
     level: () => outLevel,

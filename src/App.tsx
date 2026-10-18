@@ -9,12 +9,15 @@ import { VoiceWaves } from './ui/VoiceWaves'
 import { useStore } from './store'
 import {
   startVoice,
+  noteVoiceStart,
   NAME,
   NAME_END,
   NAME_PREFIX,
   type Voice,
   type VoiceMode,
 } from './lib/voice'
+import type { VoiceHealth } from './lib/voiceCore'
+import { primeCapture } from './lib/pcmCapture'
 import { createSpeaker, cycleVoice, currentVoiceName, diag as ttsDiag } from './lib/tts'
 import { STOP_ONLY } from './lib/stopWords'
 import * as sfx from './lib/sfx'
@@ -44,9 +47,18 @@ import {
   asideNote,
   type Msg,
 } from './lib/brain'
-import { getMic, startAnalyser, micLevel } from './lib/audio'
+import { getMic, startAnalyser, micLevel, micAlive, releaseMic } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
-import { ServiceError, trace } from './lib/bridge'
+import { ServiceError, trace, reconnectNow } from './lib/bridge'
+import {
+  watchLifecycle,
+  planRecovery,
+  recentCount,
+  micPermission,
+  createRecoveryGate,
+  armTapOnce,
+  type ShowReason,
+} from './lib/lifecycle'
 import { env } from './config'
 import { musicReply, parseMusicCommand, parseYesNo, type MusicIntent, type MusicKind } from './lib/musicIntent'
 import { runMusic } from './lib/yandexMusic'
@@ -57,6 +69,13 @@ import { makeVoiceSlot, type VoiceSlot } from './lib/voiceSlot'
 import { routePhrase } from './lib/turnRoute'
 import { createAsides, type Asides } from './lib/aside'
 import { GREET_SCREEN_MS, HANDOVER_MS, SPLASH_AFTER_START_MS } from './lib/bootTimeline'
+import { createLinkStatus } from './lib/linkStatus'
+
+/** A question the network cut off: said quietly, on the reconnect's line. */
+const LINK_CUT =
+  LANG === 'ru'
+    ? 'Ответ прервался при смене сети. Когда связь вернётся, задайте вопрос снова.'
+    : 'The answer was cut off by a network change. Ask again once the connection is back.'
 
 type Speaker = ReturnType<typeof createSpeaker>
 
@@ -128,6 +147,10 @@ type MusicQuestion =
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `id${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+
+/** Asks the recovery effect to restart the microphone on the next touch of the page. */
+const MIC_TAP = 'jarvis:mic-tap'
+const requestMicTap = () => window.dispatchEvent(new Event(MIC_TAP))
 
 /** The same mishearings voice.ts accepts for the wake word — otherwise a turn
  *  that woke him as "travis" gets that word sent on to the model as a question. */
@@ -260,6 +283,7 @@ export default function App() {
     // Trouble outside him that the last turn ran into (the usage limit, the
     // network) is not this turn's: if it persists, this turn says so again.
     if (s.error && s.errorKind === 'service') s.setError(null)
+    s.setLinkNote(null)
     // Last turn's panels and blades go now, before the new answer starts
     // putting its own up. Anything the model marked sticky survives.
     s.clearPanels()
@@ -398,6 +422,13 @@ export default function App() {
       if (stale()) return
       t.done('failed')
       console.error(err)
+      // The connection went under the question (a VPN or network switch): the
+      // redial is already on it and the reconnect is on screen, quietly. Not a
+      // fault, no alarm — the reconnect says whether to ask again.
+      if (err instanceof ServiceError && err.kind === 'link') {
+        store.getState().setLinkNote(LINK_CUT)
+        return
+      }
       sfx.play('error')
       const service = err instanceof ServiceError
       store
@@ -698,11 +729,23 @@ export default function App() {
   const onVoiceError = (message: string) => {
     floor.log('voice:error', { message: message.slice(0, 60) })
     store.getState().setError(message)
+    // A loop that can no longer hear is restarted by a touch on the page — the
+    // only thing a phone has instead of the space bar.
+    setTimeout(() => {
+      const v = voice()
+      if (v && !v.ok()) requestMicTap()
+    }, 0)
+  }
+
+  /** What the status line says about hearing: the browser's own recogniser standing in still hears. */
+  const onVoiceHealth = (health: VoiceHealth) => {
+    floor.log('voice:health', { health })
+    store.getState().setVoiceHealth(health === 'recovering' ? 'recovering' : health === 'down' ? 'down' : 'ok')
   }
 
   if (!voiceSlot.current) {
     voiceSlot.current = makeVoiceSlot(
-      () => startVoice({ mode, onWake, onSpeechStart, onPartial, onUtterance, onError: onVoiceError }),
+      () => startVoice({ mode, onWake, onSpeechStart, onPartial, onUtterance, onError: onVoiceError, onHealth: onVoiceHealth }),
       floor.log,
     )
   }
@@ -710,17 +753,29 @@ export default function App() {
   /** What to say when the microphone is not working, and what to do about it. */
   const RETRY_MIC =
     LANG === 'ru'
-      ? 'Микрофон не работает. Нажмите пробел, чтобы запустить его снова.'
-      : 'The microphone is not working. Press Space to start it again.'
+      ? 'Микрофон не работает. Коснитесь экрана или нажмите пробел, чтобы запустить его снова.'
+      : 'The microphone is not working. Tap the screen or press Space to start it again.'
 
   /**
    * Start the voice loop again after it could not start — permission refused,
    * no microphone. The slot replaces the dead loop; it never adds a second.
    */
   const retryVoice = async () => {
+    // From a key press or a touch: start the capture's audio inside it.
+    primeCapture()
+    noteVoiceStart('retry')
     store.getState().setError(null)
+    // A loop fed a stream that has stopped hearing still calls itself working,
+    // and start() would hand that same deaf loop back: replace it instead.
+    if (!micAlive()) {
+      voiceSlot.current!.stop()
+      releaseMic()
+    }
     const v = await voiceSlot.current!.start()
-    if (!v.ok()) store.getState().setError(`${store.getState().error ?? ''} ${RETRY_MIC}`.trim())
+    if (!v.ok()) {
+      store.getState().setError(`${store.getState().error ?? ''} ${RETRY_MIC}`.trim())
+      requestMicTap()
+    }
     else void listenWhenReady(AWAIT_SPEECH_MS, () => store.getState().phase === 'dormant')
   }
 
@@ -732,6 +787,9 @@ export default function App() {
     // twice, arming two voice loops and two download polls.
     if (booting.current) return
     booting.current = true
+    // Still inside the press: the capture's audio is started now, not after
+    // the boot's awaits, when a phone no longer counts it as the user's.
+    primeCapture()
 
     try {
       await ignite()
@@ -922,17 +980,51 @@ export default function App() {
           console.warn('[jarvis] unknown ui op:', op, args)
       }
     })
-    // In bridge mode the conversation lives in the agent session, which is tied
-    // to the socket — so a drop silently wipes his memory while the transcript
-    // on screen still shows it. Better to say so than to let him quietly forget.
-    watchConnection((state) => {
-      floor.log(`ws:${state}`, { asking: floor.asking() })
-      if (state === 'lost') {
-        store.getState().setError('Bridge connection lost — reconnecting.', 'service')
+    // In bridge mode the conversation lives in the agent session. After a drop
+    // the bridge gives it back when it can (resume.ts); when it cannot, say so
+    // rather than let him quietly forget what the transcript on screen still
+    // shows. A question cut off by the drop is never asked again on its own.
+    //
+    // A drop is a state, not an error (linkStatus.ts): a VPN or network switch
+    // used to put "connection lost", then "connection restored", in the red
+    // plate kept for real faults. Now the reconnect is shown quietly, the
+    // working status returns with the socket, and only an outage that lasts is
+    // said plainly, with a way to try again (Hud.tsx).
+    //
+    // What the page said while there was no connection is taken back once
+    // there is one: the boot's "cannot reach the bridge" stayed on screen after
+    // the re-dial got through on its own, telling the user something no longer
+    // true.
+    let bootFailure: string | null = null
+    const link = createLinkStatus({ onChange: (state) => store.getState().setLink(state) })
+    watchConnection((state, detail) => {
+      floor.log(`ws:${state}`, { asking: floor.asking(), interrupted: Boolean(detail?.interrupted) })
+      const cut = detail?.interrupted
+        ? LANG === 'ru'
+          ? 'Последний вопрос мог не завершиться — при необходимости задайте его снова.'
+          : 'The last question may not have finished — ask it again if needed.'
+        : null
+      if (state === 'open') {
+        link.restored()
+        const shown = store.getState().error
+        if (shown && shown === bootFailure) store.getState().setError(null)
+        bootFailure = null
+      } else if (state === 'lost') {
+        link.lost()
+      } else if (state === 'down') {
+        link.down()
+      } else if (state === 'resumed') {
+        link.restored()
+        store.getState().setLinkNote(cut)
       } else if (state === 'reconnected') {
+        link.restored()
         store
           .getState()
-          .setError('Bridge reconnected. The previous conversation was not kept.', 'service')
+          .setLinkNote(
+            (LANG === 'ru'
+              ? 'Связь восстановлена, начат новый разговор: прежний контекст недоступен.'
+              : 'Reconnected on a new conversation; the earlier context was not kept.') + (cut ? ' ' + cut : ''),
+          )
       }
     })
     // Everything the boot itself sets up is registered by now.
@@ -946,6 +1038,7 @@ export default function App() {
         if (usingBridge) step('services', 'ok')
       },
       (err: Error) => {
+        bootFailure = err.message
         s.setError(err.message)
         step('services', 'fail', 'НЕТ СВЯЗИ')
       },
@@ -1026,8 +1119,12 @@ export default function App() {
 
     // One voice loop, started once, running until the page closes. A loop
     // that could not hear at all is said so, with the way to start it again.
+    noteVoiceStart('boot')
     const loop = await voiceSlot.current!.start()
-    if (!loop.ok()) store.getState().setError(`${store.getState().error ?? ''} ${RETRY_MIC}`.trim())
+    if (!loop.ok()) {
+      store.getState().setError(`${store.getState().error ?? ''} ${RETRY_MIC}`.trim())
+      requestMicTap()
+    }
 
     // The voice loop is up: the start-up is done. Marked before the phase
     // changes, so the boot screen fades out showing it.
@@ -1218,7 +1315,7 @@ export default function App() {
       ) {
         onSpeechStart()
         listen(AWAIT_SPEECH_MS)
-      } else if (voice() && !voice()!.ok()) {
+      } else if (voice() && (!voice()!.ok() || !micAlive())) {
         // The microphone is down: Space starts it again rather than waking
         // him to a loop that cannot hear the answer.
         void retryVoice()
@@ -1241,6 +1338,126 @@ export default function App() {
       floor.supersede('unmount')
       // The camera must not outlive the page that turned it on.
       hands.disableHands()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // -- coming back: lock screen, background, back-forward cache, network ------
+
+  /**
+   * See lifecycle.ts. The page coming back checks the microphone and the
+   * bridge and repairs only what is broken; the phase, the wake word and the
+   * stop word are the loop's as before. A burst of returns is one recovery
+   * (createRecoveryGate), and a stream that keeps dying is not reopened in a
+   * loop — after a few tries, or where the browser has not said the microphone
+   * is allowed, a touch on the page restarts it, so the request for the
+   * microphone comes from the user. The touch only restarts: it does not open
+   * the microphone for a question, and taps on buttons and panels are theirs.
+   */
+  useEffect(() => {
+    let gone = false
+    const restarts: number[] = []
+    let tapArmed: (() => void) | null = null
+    /** The message on screen when the tap was asked for, so it can be cleared once heard again. */
+    let tapMessage: string | null = null
+
+    const disarmTap = () => {
+      tapArmed?.()
+      tapArmed = null
+    }
+
+    /** The loop back on a live stream, without waking him: the user only asked for the microphone. */
+    const quietRestart = async () => {
+      if (!micAlive()) {
+        voiceSlot.current?.stop()
+        releaseMic()
+      }
+      noteVoiceStart('tap')
+      const v = await voiceSlot.current?.start()
+      if (gone) return
+      if (v && !v.ok()) armTap()
+      else {
+        clearTapMessage()
+        void startAnalyser().catch(() => {})
+      }
+    }
+
+    const armTap = () => {
+      if (tapArmed) return
+      tapArmed = armTapOnce(window, () => {
+        tapArmed = null
+        // In the touch itself, before any await: the audio the restart needs
+        // is started while the browser still counts the gesture.
+        primeCapture()
+        void quietRestart()
+      })
+      // A message that already names the cause (and says to tap) stays; the
+      // general one is shown only when nothing is.
+      if (!store.getState().error) store.getState().setError(RETRY_MIC)
+      tapMessage = store.getState().error
+    }
+    /** Clears what armTap left on screen, once the microphone is back. */
+    const clearTapMessage = () => {
+      const shown = store.getState().error
+      if (shown && (shown === RETRY_MIC || shown === tapMessage)) store.getState().setError(null)
+      tapMessage = null
+    }
+
+    const recover = async (reasons: ShowReason[]) => {
+      const phase = store.getState().phase
+      if (gone || phase === 'offline' || phase === 'boot') return
+      if (usingBridge) reconnectNow()
+      const plan = planRecovery({
+        visible: document.visibilityState !== 'hidden',
+        micAlive: micAlive(),
+        voiceOk: voice()?.ok() ?? false,
+        permission: await micPermission(),
+        recentRestarts: recentCount(restarts, Date.now()),
+      })
+      floor.log('voice:recover', { reason: reasons.join('+'), plan })
+      if (plan === 'tap') armTap()
+      if (plan !== 'restart' || gone) return
+      restarts.push(Date.now())
+      // The loop may call itself working while it is fed a dead stream, so
+      // it is replaced, not asked: stop it, let the stream go, start again.
+      voiceSlot.current?.stop()
+      releaseMic()
+      // No touch behind this one: if the phone will not start the audio, the
+      // capture says so within AUDIO_START_MS and the page asks for a touch.
+      noteVoiceStart('recover')
+      const v = await voiceSlot.current?.start()
+      if (gone) return
+      if (v && !v.ok()) armTap()
+      else {
+        disarmTap()
+        clearTapMessage()
+        // The pulse follows the new stream; without it the orb only goes still.
+        void startAnalyser().catch(() => {})
+      }
+    }
+
+    // One recovery at a time, and one for a burst of returns.
+    const gate = createRecoveryGate(recover)
+    const unwatch = watchLifecycle({
+      doc: document,
+      win: window,
+      onShow: (reason) => gate.schedule(reason),
+      onHide: () => {
+        // Frozen or unloaded: a frozen page cannot use the microphone, and on
+        // return it is reopened by recover() through pageshow.
+        voiceSlot.current?.stop()
+        releaseMic()
+      },
+    })
+    // The start-up, a failed retry or a refusing recogniser ask for a touch here.
+    const onTapRequest = () => armTap()
+    window.addEventListener(MIC_TAP, onTapRequest)
+    return () => {
+      gone = true
+      gate.close()
+      unwatch()
+      disarmTap()
+      window.removeEventListener(MIC_TAP, onTapRequest)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

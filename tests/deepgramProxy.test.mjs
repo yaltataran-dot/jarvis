@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import WebSocket, { WebSocketServer } from 'ws'
-import { cleanKey, createSttProxy, listenUrl, slim, STT_PATH } from '../bridge/deepgramProxy.mjs'
+import { cleanKey, createSttProxy, keyProblem, listenUrl, slim, startReason, STT_PATH } from '../bridge/deepgramProxy.mjs'
 
 const SECRET = 'dg-test-secret-0123456789'
 
@@ -167,14 +167,34 @@ test('a page that sends nothing is let go', async () => {
   await up.close()
 })
 
-test('one session at a time: a newer one replaces the older', async () => {
+test('a computer and a phone listen at once: the second page does not end the first', async () => {
   const up = await fakeUpstream()
   const b = await bridge({ key: () => SECRET, url: up.url })
+  const pc = await b.open()
+  await until(() => pc.inbox.some((m) => m.t === 'ready'))
+  const phone = await b.open()
+  await until(() => phone.inbox.some((m) => m.t === 'ready'))
+  assert.equal(pc.c.readyState, WebSocket.OPEN, 'the first page still listens')
+  assert.equal(b.proxy.count(), 2)
+  pc.c.send(Buffer.alloc(320, 1))
+  phone.c.send(Buffer.alloc(320, 2))
+  await until(() => up.seen.frames.length === 2)
+  await b.close()
+  await up.close()
+})
+
+test('past the limit the oldest session is replaced, so a half-open socket cannot lock the user out', async () => {
+  const up = await fakeUpstream()
+  const b = await bridge({ key: () => SECRET, url: up.url, maxSessions: 2 })
   const first = await b.open()
   await until(() => first.inbox.some((m) => m.t === 'ready'))
   const second = await b.open()
-  assert.equal(await first.closed, 4001)
   await until(() => second.inbox.some((m) => m.t === 'ready'))
+  const third = await b.open()
+  assert.equal(await first.closed, 4001)
+  await until(() => third.inbox.some((m) => m.t === 'ready'))
+  assert.equal(second.c.readyState, WebSocket.OPEN)
+  assert.equal(b.proxy.count(), 2)
   assert.equal(b.proxy.active(), true)
   await b.close()
   await up.close()
@@ -216,4 +236,108 @@ test('cleanKey treats blank as missing and trims the rest', () => {
   assert.equal(cleanKey(''), null)
   assert.equal(cleanKey('  \r\n'), null)
   assert.equal(cleanKey(' abc\r\n'), 'abc')
+})
+
+test('a key with spaces, quotes or non-ASCII letters is unusable, not sent', () => {
+  for (const raw of ['"abc123"', "'abc123'", 'abc 123', 'ваш ключ Deepgram', 'abc123 # мой ключ', 'abc 123']) {
+    assert.equal(keyProblem(raw), 'unusable', JSON.stringify(raw))
+    assert.equal(cleanKey(raw), null, JSON.stringify(raw))
+  }
+  assert.equal(keyProblem(undefined), 'missing')
+  assert.equal(keyProblem('  '), 'missing')
+  assert.equal(keyProblem(' 0123abcdefABCDEF0123456789abcdef01234567\n'), null)
+})
+
+test('an unusable key refuses the page socket like a missing one, and nothing is dialled', async () => {
+  const up = await fakeUpstream()
+  const b = await bridge({ key: () => '"вставьте ключ сюда"', url: up.url })
+  const { closed } = await b.open()
+  assert.equal(await closed, 4503)
+  assert.equal(up.seen.connections, 0)
+  await b.close()
+  await up.close()
+})
+
+test('a socket that cannot even be opened is logged by its code, not its message', async () => {
+  const logs = []
+  const b = await bridge({
+    key: () => SECRET,
+    log: (m) => logs.push(m),
+    connectUpstream: () => {
+      throw Object.assign(new TypeError(`Invalid character in header content ["Authorization"]: Token ${SECRET}`), { code: 'ERR_INVALID_CHAR' })
+    },
+  })
+  const { inbox, closed } = await b.open()
+  assert.equal(await closed, 4502)
+  assert.ok(inbox.some((m) => m.t === 'err'))
+  assert.ok(logs.some((l) => l === 'stt upstream could not be opened (ERR_INVALID_CHAR)'), logs.join(' | '))
+  assert.ok(logs.every((l) => !l.includes(SECRET)), 'no secret in the log')
+  await b.close()
+})
+
+test('Deepgram closing a live session is logged with its code and reason', async () => {
+  const up = await fakeUpstream()
+  const logs = []
+  const b = await bridge({ key: () => SECRET, url: up.url, log: (m) => logs.push(m) })
+  const { inbox, closed } = await b.open()
+  await until(() => inbox.some((m) => m.t === 'ready'))
+  up.sockets[0].close(1011, 'NET-0001 no audio\u0000ÿ received')
+  assert.equal(await closed, 4502)
+  assert.ok(logs.includes('stt upstream closed (1011, NET-0001 no audio received)'), logs.join(' | '))
+  assert.ok(logs.every((l) => !l.includes(SECRET)))
+  await b.close()
+  await up.close()
+})
+
+test('our own end of a session does not log an upstream close', async () => {
+  const up = await fakeUpstream()
+  const logs = []
+  const b = await bridge({ key: () => SECRET, url: up.url, log: (m) => logs.push(m) })
+  const { c, inbox } = await b.open()
+  await until(() => inbox.some((m) => m.t === 'ready'))
+  c.close()
+  await until(() => logs.some((l) => l.startsWith('stt session ended')))
+  await new Promise((r) => setTimeout(r, 50))
+  assert.ok(!logs.some((l) => l.startsWith('stt upstream closed')), logs.join(' | '))
+  await b.close()
+  await up.close()
+})
+
+test('the page saying why it closed (4010: the phone would not start the audio) reaches the log; other codes stay plain', async () => {
+  const up = await fakeUpstream()
+  const logs = []
+  const b = await bridge({ key: () => SECRET, url: up.url, log: (m) => logs.push(m) })
+  const first = await b.open()
+  await until(() => first.inbox.some((m) => m.t === 'ready'))
+  first.c.close(4010)
+  await until(() => logs.includes('stt session ended (4010)'))
+  const second = await b.open()
+  await until(() => second.inbox.some((m) => m.t === 'ready'))
+  second.c.close(4500)
+  await until(() => logs.filter((l) => l.startsWith('stt session ended')).length === 2)
+  assert.equal(logs.filter((l) => l.startsWith('stt session ended'))[1], 'stt session ended (1000)')
+  await b.close()
+  await up.close()
+})
+
+test('each session says in the log which start of the page it is, as one known word', async () => {
+  assert.equal(startReason('recover'), 'recover')
+  assert.equal(startReason('restore'), 'restore')
+  assert.equal(startReason('<script>'), 'other')
+  assert.equal(startReason(''), 'other', 'an old page sends none')
+  const up = await fakeUpstream()
+  const logs = []
+  const proxy = createSttProxy({ key: () => SECRET, url: up.url, log: (m) => logs.push(m) })
+  const server = http.createServer()
+  const wss = new WebSocketServer({ server })
+  wss.on('connection', (s, req) => proxy.accept(s, new URL(req.url, 'http://bridge').searchParams.get('why') ?? ''))
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const c = new WebSocket(`ws://127.0.0.1:${server.address().port}${STT_PATH}?why=tap`)
+  await new Promise((ok, no) => (c.on('open', ok), c.on('error', no)))
+  await until(() => logs.includes('stt session started (tap)'))
+  c.close(4010)
+  await until(() => logs.includes('stt session ended (4010)'))
+  assert.ok(logs.every((l) => !l.includes(SECRET)))
+  await new Promise((r) => (wss.close(), server.close(r)))
+  await up.close()
 })

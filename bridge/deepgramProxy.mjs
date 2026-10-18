@@ -26,6 +26,8 @@ export const IDLE_MS = 30_000
 export const MAX_FRAME_BYTES = 64 * 1024
 /** Roughly 16 kHz * 2 bytes * 3 h. A cap on a single session, not on the day. */
 export const MAX_SESSION_BYTES = 350 * 1024 * 1024
+/** Pages that may listen at once — a computer, a phone, a tablet. Each is a Deepgram stream. */
+export const MAX_SESSIONS = 3
 /** Frames held while the upstream socket is still connecting (~3 s). */
 const MAX_QUEUED_FRAMES = 30
 const KEEPALIVE_MS = 5_000
@@ -54,11 +56,24 @@ export function listenUrl(lang = 'ru', base = ENDPOINT) {
   return `${base}?${q}`
 }
 
-/** The key as the environment gave it, or null when it is missing or blank. */
+/**
+ * What is wrong with the key as the environment gave it, or null when it can be
+ * used. A Deepgram key is one printable token; spaces, quotes or letters
+ * outside ASCII mean something else was pasted with it, or instead of it. Such
+ * a value cannot even be put in a header: the socket constructor threw on it,
+ * every session ended a fraction of a second after it began, and the page fell
+ * back to the browser engine once a minute without a word in the log.
+ */
+export function keyProblem(raw) {
+  const v = typeof raw === 'string' ? raw.trim() : ''
+  if (!v) return 'missing'
+  if (/[^\x21-\x7e]|["']/.test(v)) return 'unusable'
+  return null
+}
+
+/** The key as the environment gave it, or null when it is missing, blank or unusable. */
 export function cleanKey(raw) {
-  if (typeof raw !== 'string') return null
-  const v = raw.trim()
-  return v ? v : null
+  return keyProblem(raw) ? null : raw.trim()
 }
 
 /**
@@ -90,6 +105,14 @@ export function slim(raw) {
  * Create the proxy. `key` is read per session, so a key set later is picked up
  * without a restart of this module. `connectUpstream` exists for the tests.
  */
+/** The page's reasons for starting its voice loop (voice.ts). Anything else is logged as 'other'. */
+const START_REASONS = new Set(['boot', 'tap', 'retry', 'recover', 'restore', 'start'])
+
+/** The start reason from the page's /stt-stream?why=…, as one known word. */
+export function startReason(raw) {
+  return START_REASONS.has(raw) ? raw : 'other'
+}
+
 export function createSttProxy({
   key,
   lang = 'ru',
@@ -99,19 +122,27 @@ export function createSttProxy({
   maxSessionMs = MAX_SESSION_MS,
   maxBytes = MAX_SESSION_BYTES,
   keepAliveMs = KEEPALIVE_MS,
+  maxSessions = MAX_SESSIONS,
   connectUpstream = (u, headers) => new WebSocket(u, { headers, handshakeTimeout: CONNECT_TIMEOUT_MS }),
 }) {
-  /** The one live session. A newer one replaces it: a half-open old socket must not lock the user out. */
-  let active = null
+  /**
+   * The live sessions, oldest first. It used to be one: a phone opening the
+   * page replaced the computer's session and the computer's retry replaced the
+   * phone's, each falling back to the browser engine in turn — which on
+   * Android cannot share the microphone and reported it as "refused". A few
+   * pages may listen at once now; past that the oldest goes, so a half-open old
+   * socket still cannot lock the user out.
+   */
+  const sessions = []
 
-  /** Take over a client socket that connected to STT_PATH. */
-  function accept(client) {
+  /** Take over a client socket that connected to STT_PATH. `why` is the page's start reason, for the log. */
+  function accept(client, why) {
     const apiKey = cleanKey(key())
     if (!apiKey) {
       client.close(4503, 'no key')
       return
     }
-    if (active) active.end(4001, 'replaced')
+    while (sessions.length >= maxSessions) sessions[0].end(4001, 'replaced')
 
     let upstream = null
     let ready = false
@@ -132,7 +163,8 @@ export function createSttProxy({
         if (idle) clearTimeout(idle)
         // Timeouts and intervals share one clear in Node.
         for (const t of timers) clearTimeout(t)
-        if (active === session) active = null
+        const at = sessions.indexOf(session)
+        if (at !== -1) sessions.splice(at, 1)
         try {
           if (upstream?.readyState === WebSocket.OPEN) {
             upstream.send(JSON.stringify({ type: 'CloseStream' }))
@@ -153,7 +185,7 @@ export function createSttProxy({
         log(`stt session ended (${code})`)
       },
     }
-    active = session
+    sessions.push(session)
 
     const touch = () => {
       if (idle) clearTimeout(idle)
@@ -161,10 +193,15 @@ export function createSttProxy({
     }
     touch()
     timers.push(setTimeout(() => session.end(4000, 'session limit'), maxSessionMs))
+    // Which start of the page's voice loop this is (voice.ts), so a session
+    // that later idles out or is closed as blocked can be matched to it.
+    if (why !== undefined) log(`stt session started (${startReason(why)})`)
 
     try {
       upstream = connectUpstream(url, { Authorization: `Token ${apiKey}` })
-    } catch {
+    } catch (err) {
+      // The code only (ERR_INVALID_CHAR and the like): a message could quote the header.
+      log(`stt upstream could not be opened (${err?.code ?? err?.name ?? 'error'})`)
       sendClient({ t: 'err' })
       session.end(4502, 'upstream')
       return
@@ -193,14 +230,22 @@ export function createSttProxy({
       sendClient({ t: 'err' })
       session.end(4502, 'upstream')
     })
-    upstream.on('error', () => {
+    upstream.on('error', (err) => {
       if (!ended) {
-        log('stt upstream socket error')
+        log(`stt upstream socket error (${err?.code ?? err?.name ?? 'error'})`)
         sendClient({ t: 'err' })
         session.end(4502, 'upstream')
       }
     })
-    upstream.on('close', () => session.end(4502, 'upstream closed'))
+    upstream.on('close', (code, reason) => {
+      // Deepgram says why in the close frame (NET-0001, DATA-0000, …). Logged
+      // only when it closed a live session, as printable text, short.
+      if (!ended) {
+        const why = String(reason ?? '').replace(/[^\x20-\x7e]/g, '').slice(0, 80)
+        log(`stt upstream closed (${code}${why ? `, ${why}` : ''})`)
+      }
+      session.end(4502, 'upstream closed')
+    })
 
     client.on('message', (data, isBinary) => {
       if (ended) return
@@ -215,9 +260,11 @@ export function createSttProxy({
       if (ready) upstream.send(frame)
       else if (queue.length < MAX_QUEUED_FRAMES) queue.push(frame)
     })
-    client.on('close', () => session.end(1000, 'client closed'))
+    // The page's own reason (4000–4099, e.g. 4010: the phone would not start
+    // the audio) is kept for the log line; anything else is a plain close.
+    client.on('close', (code) => session.end(code >= 4000 && code < 4100 ? code : 1000, 'client closed'))
     client.on('error', () => session.end(1011, 'client error'))
   }
 
-  return { accept, active: () => active !== null }
+  return { accept, active: () => sessions.length > 0, count: () => sessions.length }
 }

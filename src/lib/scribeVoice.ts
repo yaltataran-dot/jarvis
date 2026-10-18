@@ -44,6 +44,8 @@ export type ScribeHooks = {
   onPartial: (text: string) => void
   /** The phrase, settled. Arrives once per phrase. */
   onCommitted: (text: string) => void
+  /** A phrase ended with no words (Deepgram): nothing to say, but the phrase is closed. */
+  onPhraseEnd?: () => void
   /** A failure the session cannot continue after. */
   onError: (reason: string) => void
   /** The socket closed. Expected only after our own close(). */
@@ -149,7 +151,10 @@ export async function startScribeVoice(
   const takeStop = (word: string, how: 'partial' | 'committed') => {
     reset()
     // The rest of this phrase is the same stop, or his voice: not a command.
-    tainted = true
+    // Only while the phrase goes on — a stop taken from a committed phrase has
+    // nothing left of it, and the mark used to stay for the next phrase, which
+    // was then dropped: the "Джарвис" after the stop went unheard.
+    tainted = how === 'partial'
     stopAt = Date.now()
     diag.heard = word
     diag.heardAt = Date.now()
@@ -316,6 +321,11 @@ export async function startScribeVoice(
     },
     onPartial,
     onCommitted,
+    // Its marks go with it; a partial of it never became a phrase to act on.
+    onPhraseEnd: () => {
+      if (stopped || failed) return
+      reset()
+    },
     onError: (reason) => fail(reason),
     onClose: () => fail('closed'),
   }

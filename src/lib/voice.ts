@@ -7,9 +7,10 @@ import { trace } from './bridge'
 import { isEcho } from './echo'
 import { startBrowserVoice } from './browserVoice'
 import { connectDeepgram } from './deepgramVoice'
-import { startPcmCapture } from './pcmCapture'
+import { captureDiag, startPcmCapture } from './pcmCapture'
 import { SCRIBE_START_MS, startScribeVoice, type ScribeHooks, type ScribeLink } from './scribeVoice'
 import { superviseVoice } from './voiceSupervisor'
+import { audioBlockedMessage, classifyMicError, micFailureMessage, sttUnavailableMessage } from './micErrors'
 import {
   SELF_GUARD_MS,
   WAKE,
@@ -71,12 +72,10 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
     await getMic()
   } catch (err) {
     diag.lastError = 'mic'
-    trace('voice:mic-failed', { name: (err as DOMException)?.name ?? 'unknown' })
-    h.onError(
-      err instanceof DOMException && err.name === 'NotAllowedError'
-        ? 'Microphone access denied — voice input is unavailable.'
-        : 'No microphone available.',
-    )
+    const name = (err as DOMException)?.name ?? 'unknown'
+    const kind = classifyMicError(name)
+    trace('voice:mic-failed', { name, kind })
+    h.onError(micFailureMessage(kind, LANG))
     return deadVoice()
   }
   const speech = { speakingSince, speechActive, lastSoundEnded, speakingNow }
@@ -94,22 +93,46 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
     const deepgram = caps().sttEngine === 'deepgram'
     const realtimeName = deepgram ? 'deepgram' : 'scribe'
     diag.engine = realtimeName
+    // The first session is this start's; any later one in this loop is the
+    // supervisor bringing Deepgram back after the browser's recogniser.
+    let why: VoiceStartReason = startReason
+    startReason = 'start'
     return superviseVoice({
       mode: h.mode,
       realtimeName,
       // Deepgram needs no credential on the page: the bridge holds the key.
       getToken: deepgram ? async () => '' : fetchScribeToken,
-      startScribe: (token, onFail) =>
-        startScribeVoice(token, h, {
-          connect: deepgram ? connectDeepgramLink : connectScribe,
+      startScribe: (token, onFail) => {
+        const link = deepgramLink(why)
+        why = 'restore'
+        return startScribeVoice(token, h, {
+          connect: deepgram ? link : connectScribe,
           speech,
           onFail,
           startTimeoutMs: SCRIBE_START_MS,
-        }),
+        })
+      },
       startBrowser: () => {
         diag.engine = 'browser'
         return browser()
       },
+      // The phone would not start the audio: the page asks for a touch.
+      fatal: (reason) => reason === 'audio-blocked',
+      onFatal: (reason) => {
+        diag.lastError = reason
+        if (reason === 'audio-blocked') {
+          trace('voice:audio-blocked', { state: captureDiag.lastState, primed: captureDiag.primedUsed })
+          h.onError(audioBlockedMessage(LANG))
+        } else {
+          h.onError(sttUnavailableMessage(LANG))
+        }
+      },
+      // A dropped session (the network, the bridge closing it) is brought back
+      // first; the browser's recogniser is no fallback where it cannot share
+      // the microphone (Android), and there the page asks for a touch instead.
+      reconnectDelays: RECONNECT_DELAYS_MS,
+      fallback: browserFallbackWorks(),
+      onHealth: h.onHealth,
     })
   }
 
@@ -129,9 +152,37 @@ async function fetchScribeToken(): Promise<string> {
   return token
 }
 
+/** Waits before each attempt to bring a dropped Deepgram session back, before giving up on it. */
+export const RECONNECT_DELAYS_MS = [1000, 3000, 8000]
+
+/**
+ * Whether the browser's own recogniser can stand in for Deepgram here. Not on
+ * Android: Chrome's recogniser cannot open a microphone the page already holds
+ * and fails with `not-allowed` — the "built-in recognition could not get the
+ * microphone" message the phone showed every time a Deepgram session dropped.
+ */
+export function browserFallbackWorks(ua: string = typeof navigator !== 'undefined' ? navigator.userAgent : ''): boolean {
+  return !/Android/i.test(ua)
+}
+
+/**
+ * Why the voice loop is being started, for the bridge's log line — on a phone
+ * the log is the only record of which restart came up deaf. One word from a
+ * fixed list; nothing about the user.
+ */
+export type VoiceStartReason = 'boot' | 'tap' | 'retry' | 'recover' | 'restore' | 'start'
+let startReason: VoiceStartReason = 'start'
+
+/** Say why the next start happens; read once by it. */
+export function noteVoiceStart(reason: VoiceStartReason): void {
+  startReason = reason
+}
+
 /** Deepgram through the bridge's /stt-stream, fed by the shared microphone. */
-const connectDeepgramLink = (_token: string, hooks: ScribeHooks): Promise<ScribeLink> =>
-  connectDeepgram(hooks, { url: `${BRIDGE_WS_URL}/stt-stream`, capture: startPcmCapture })
+const deepgramLink =
+  (why: VoiceStartReason) =>
+  (_token: string, hooks: ScribeHooks): Promise<ScribeLink> =>
+    connectDeepgram(hooks, { url: `${BRIDGE_WS_URL}/stt-stream?why=${why}`, capture: startPcmCapture })
 
 /** Errors that leave the session usable: Scribe refused one commit, not the stream. */
 const SCRIBE_NON_FATAL = new Set(['commit_throttled', 'insufficient_audio_activity'])

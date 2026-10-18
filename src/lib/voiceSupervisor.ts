@@ -1,4 +1,4 @@
-import { diag, trace, type Voice, type VoiceMode } from './voiceCore'
+import { diag, trace, type Voice, type VoiceHealth, type VoiceMode } from './voiceCore'
 
 /**
  * Which engine hears the user: Scribe if it works, the browser's own if not.
@@ -35,6 +35,29 @@ export type SupervisorDeps = {
   pollMs?: number
   /** What the realtime engine is called in diagnostics. Default 'scribe'. */
   realtimeName?: string
+  /**
+   * A failure no engine can get past without the user — the browser would not
+   * start the audio until it is touched. The loop stops (ok() turns false, so
+   * the page asks for a touch) instead of moving to the browser's recogniser,
+   * which on a phone cannot have the microphone either and would only blame
+   * the permission.
+   */
+  fatal?: (reason: string) => boolean
+  onFatal?: (reason: string) => void
+  /**
+   * Waits before each attempt to bring the realtime engine back after it
+   * dropped (a network blip, the bridge closing the session), before falling
+   * back. Empty: fall back at once, as before.
+   */
+  reconnectDelays?: number[]
+  /**
+   * Whether the browser's recogniser is a fallback at all. On Android it is
+   * not: it cannot have the microphone the page already holds, so it only
+   * fails and blames the permission. Without it, a realtime engine that will
+   * not come back stops the loop and the page asks for a touch.
+   */
+  fallback?: boolean
+  onHealth?: (health: VoiceHealth) => void
 }
 
 export async function superviseVoice(d: SupervisorDeps): Promise<Voice> {
@@ -50,6 +73,19 @@ export async function superviseVoice(d: SupervisorDeps): Promise<Voice> {
   let timer: ReturnType<typeof setTimeout> | null = null
   /** Moves on every engine started, so a late failure report from an old one is ignored. */
   let epoch = 0
+  const delays = d.reconnectDelays ?? []
+  const canFallBack = d.fallback ?? true
+  /** Reconnect attempts made since the realtime engine was last live. */
+  let attempt = 0
+  /** Waiting to bring the realtime engine back: nothing hears, but the loop is not dead. */
+  let recovering = false
+  let health: VoiceHealth = 'live'
+  const report = (h: VoiceHealth) => {
+    if (h === health) return
+    health = h
+    trace('voice:health', { health: h })
+    d.onHealth?.(h)
+  }
 
   const later = (ms: number) => {
     if (timer) clearTimeout(timer)
@@ -63,7 +99,68 @@ export async function superviseVoice(d: SupervisorDeps): Promise<Voice> {
     current = d.startBrowser()
     diag.engine = 'browser'
     trace('voice:engine', { engine: 'browser', reason: reason.slice(0, 40) })
+    report('fallback')
     later(retryMs)
+  }
+
+  /** Nothing hears until the user touches the screen. */
+  const down = (reason: string) => {
+    epoch++
+    current = null
+    recovering = false
+    if (timer) clearTimeout(timer)
+    timer = null
+    trace('voice:engine', { engine: 'none', reason: reason.slice(0, 40) })
+    report('down')
+    d.onFatal?.(reason)
+  }
+
+  async function reconnect() {
+    timer = null
+    if (stopped) return
+    const mine = ++epoch
+    try {
+      const token = await d.getToken()
+      if (stopped || mine !== epoch) return
+      const engine = await d.startScribe(token, onScribeFail(mine))
+      if (stopped || mine !== epoch) {
+        engine.stop()
+        return
+      }
+      current = engine
+      kind = 'scribe'
+      recovering = false
+      attempt = 0
+      diag.engine = realtimeName
+      trace('voice:engine', { engine: realtimeName, reason: 'reconnected' })
+      report('live')
+    } catch {
+      if (stopped || mine !== epoch) return
+      lost('reconnect-failed')
+    }
+  }
+
+  /**
+   * The realtime engine is gone, not for a reason only a touch can fix: bring
+   * it back after a short wait, a few times, then fall back — or, where there
+   * is nothing to fall back to, stop and let the page ask for a touch.
+   */
+  const lost = (reason: string) => {
+    current = null
+    kind = 'scribe'
+    if (attempt < delays.length) {
+      const ms = delays[attempt++]
+      recovering = true
+      trace('voice:reconnect', { attempt, ms, reason: reason.slice(0, 40) })
+      report('recovering')
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => void reconnect(), ms)
+      return
+    }
+    attempt = 0
+    recovering = false
+    if (canFallBack) toBrowser(reason)
+    else down('stt-unavailable')
   }
 
   const onScribeFail = (mine: number) => (reason: string) => {
@@ -71,7 +168,8 @@ export async function superviseVoice(d: SupervisorDeps): Promise<Voice> {
     // The failed engine has already let go of the microphone and handed on
     // what it heard; stopping it again is harmless and makes that certain.
     current?.stop()
-    toBrowser(reason)
+    if (d.fatal?.(reason)) return down(reason)
+    lost(reason)
   }
 
   /** The quiet moment a swap needs. */
@@ -112,6 +210,7 @@ export async function superviseVoice(d: SupervisorDeps): Promise<Voice> {
         kind = 'scribe'
         diag.engine = realtimeName
         trace('voice:engine', { engine: realtimeName, reason: 'restored' })
+        report('live')
       } catch {
         trace('voice:retry-failed', { step: 'session' })
         toBrowser('retry-failed')
@@ -129,17 +228,20 @@ export async function superviseVoice(d: SupervisorDeps): Promise<Voice> {
     kind = 'scribe'
     diag.engine = realtimeName
     trace('voice:engine', { engine: realtimeName, reason: 'start' })
+    d.onHealth?.('live')
   } catch {
-    toBrowser('start-failed')
+    lost('start-failed')
   }
 
   return {
-    ok: () => switching || Boolean(current?.ok()),
+    ok: () => switching || recovering || Boolean(current?.ok()),
     live: () => Boolean(current?.live()),
     rearm: () => (current ? current.rearm() : Promise.resolve(false)),
     idle: () => Boolean(current?.idle?.()),
+    health: () => health,
     stop: () => {
       stopped = true
+      recovering = false
       if (timer) clearTimeout(timer)
       timer = null
       current?.stop()

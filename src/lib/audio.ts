@@ -4,26 +4,95 @@
  * the earlier stream, so everything that needs audio goes through here.
  */
 
-let stream: MediaStream | null = null
-let ctx: AudioContext | null = null
-let analyser: AnalyserNode | null = null
-let buf: Uint8Array | null = null
+/** The part of a MediaStream the microphone keeper looks at; tests pass fakes. */
+type MicTrack = { readyState: string; stop: () => void; addEventListener: (type: 'ended', fn: () => void) => void }
+type MicStream = { getAudioTracks: () => MicTrack[] }
 
-export async function getMic(): Promise<MediaStream> {
-  if (stream) return stream
-  stream = await navigator.mediaDevices.getUserMedia({
+/**
+ * The one microphone stream, kept alive.
+ *
+ * It used to be opened once and handed out for the life of the page. A phone
+ * ends the stream's tracks when the screen locks or the browser goes to the
+ * background, and the dead stream was handed out from then on: the recogniser
+ * was fed silence and he stopped hearing anything until the page was reloaded.
+ * So a stream is handed out only while one of its tracks is live; a dead one
+ * is let go and the next request opens a fresh one. Two requests at once share
+ * one getUserMedia — two would make Chrome drop the first stream.
+ */
+export function createMicKeeper<S extends MicStream>(request: () => Promise<S>) {
+  let stream: S | null = null
+  let pending: Promise<S> | null = null
+  const listeners = new Set<() => void>()
+
+  const live = (s: S | null) => Boolean(s?.getAudioTracks().some((t) => t.readyState === 'live'))
+
+  const release = () => {
+    const s = stream
+    stream = null
+    for (const t of s?.getAudioTracks() ?? []) t.stop()
+  }
+
+  const get = (): Promise<S> => {
+    if (live(stream)) return Promise.resolve(stream!)
+    if (pending) return pending
+    release()
+    pending = request()
+      .then((s) => {
+        stream = s
+        for (const t of s.getAudioTracks()) {
+          t.addEventListener('ended', () => {
+            // Only the stream being handed out matters; an old one ending is history.
+            if (stream === s && !live(s)) for (const fn of [...listeners]) fn()
+          })
+        }
+        return s
+      })
+      .finally(() => {
+        pending = null
+      })
+    return pending
+  }
+
+  return {
+    get,
+    /** Whether the stream being handed out can still hear. */
+    alive: () => live(stream),
+    /** Stop the tracks and forget the stream; the next get() opens a new one. */
+    release,
+    /** Called when the stream in use stops hearing (lock screen, unplugged, revoked). */
+    onEnded: (fn: () => void) => {
+      listeners.add(fn)
+      return () => listeners.delete(fn)
+    },
+    current: () => stream,
+  }
+}
+
+const mic = createMicKeeper(() =>
+  navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
     },
-  })
-  return stream
-}
+  }),
+)
+
+export const getMic = (): Promise<MediaStream> => mic.get()
+export const micAlive = mic.alive
+export const releaseMic = mic.release
+export const onMicEnded = mic.onEnded
+
+let ctx: AudioContext | null = null
+let analyser: AnalyserNode | null = null
+let buf: Uint8Array | null = null
+/** The stream the analyser listens to, so a replaced stream gets a new one. */
+let analysed: MediaStream | null = null
 
 export async function startAnalyser(): Promise<void> {
-  if (analyser) return
   const s = await getMic()
+  if (analyser && analysed === s) return
+  void ctx?.close()
   ctx = new AudioContext()
   const src = ctx.createMediaStreamSource(s)
   analyser = ctx.createAnalyser()
@@ -31,6 +100,7 @@ export async function startAnalyser(): Promise<void> {
   analyser.smoothingTimeConstant = 0.75
   src.connect(analyser)
   buf = new Uint8Array(analyser.frequencyBinCount)
+  analysed = s
 }
 
 /** 0..1 loudness. Returns 0 before the analyser is up. */

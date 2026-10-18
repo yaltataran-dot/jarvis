@@ -369,6 +369,8 @@ body::after {
     0 0 24px -8px var(--accent),
     0 14px 36px rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(8px);
+  /* Nothing inside reaches past the frame; the body below does the scrolling. */
+  overflow: hidden;
   /* Folded (or nothing said yet). */
   opacity: 0;
   transform: translateY(8px) scale(0.98);
@@ -395,7 +397,9 @@ body::after {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
@@ -403,6 +407,14 @@ body::after {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--accent) 45%, transparent) transparent;
 }
+/* Chrome and Safari: the same quiet bar; a finger scrolls with or without it. */
+.dialog-body::-webkit-scrollbar { width: 4px }
+.dialog-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 2px;
+}
+.dialog-body::-webkit-scrollbar-track { background: transparent }
+.dialog-body::-webkit-scrollbar-button { display: none }
 
 /* One line of the conversation: who, then what — stacked, so a narrow window
    still gives the words its whole width. */
@@ -410,6 +422,9 @@ body::after {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Never wider than the window, whatever a line holds. */
+  min-width: 0;
+  max-width: 100%;
   font-size: 14px;
   line-height: 1.45;
   letter-spacing: 0.01em;
@@ -530,6 +545,41 @@ body::after {
   border-radius: 999px;
   background: rgba(10, 10, 12, 0.66);
   backdrop-filter: blur(6px);
+}
+
+/* The connection being mended, or a note about the last reconnect: the
+   caption's quiet voice, not the failure plate below. The reconnect line
+   waits a moment before it shows, so a network blink shows nothing. */
+.link-status {
+  position: absolute;
+  left: 50%;
+  bottom: 80px;
+  transform: translateX(-50%);
+  max-width: min(66vw, 520px);
+  color: var(--silver);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0.03em;
+  text-align: center;
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: rgba(10, 10, 12, 0.55);
+  opacity: 0.85;
+  pointer-events: none;
+}
+.link-wait { animation: link-in 0.3s ease-out 1.5s both; }
+@keyframes link-in { from { opacity: 0; } to { opacity: 0.85; } }
+.link-status.raised, .link-down.raised { bottom: 118px; }
+.link-down { pointer-events: auto; }
+.link-retry {
+  margin-left: 8px;
+  padding: 2px 10px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  cursor: pointer;
 }
 
 /* A failure is a plate of its own, in the one colour nothing else uses. */
@@ -682,7 +732,8 @@ kbd {
 .core-state[data-mode='idle'] .cs-glow { animation: csBreath 4.5s ease-in-out infinite; }
 .core-state[data-mode='idle'] .cs-logo { opacity: 0.82; }
 
-.core-state[data-mode='waking'] .cs-arc { animation-duration: 1.1s; stroke-dasharray: 220 383; }
+.core-state[data-mode='waking'] .cs-arc,
+.core-state[data-mode='recovering'] .cs-arc { animation-duration: 1.1s; stroke-dasharray: 220 383; }
 
 .core-state[data-mode='listening'] .cs-arc { animation-duration: 3s; stroke-dasharray: 160 443; }
 
@@ -893,10 +944,25 @@ kbd {
   .hud-bottom { bottom: 60px; padding: 0 12px; font-size: 10px; letter-spacing: 0.08em; }
   /* The hint wraps to two lines here; the error and the log stand above it. */
   .error { bottom: 112px; max-width: 92vw; }
+  .link-status { bottom: 112px; max-width: 92vw; }
+  .link-status.raised, .link-down.raised { bottom: 152px; }
   /* The dialogue spans the width above both chips; while it is open the hint
      steps aside and the caption and error stand above it. */
   .dialog { --dialog-w: auto; left: 14px; right: 14px; bottom: 14px; width: auto; }
-  .dialog-panel { max-height: 34vh; }
+  /* A fixed frame, not a ceiling. With only max-height the window grew a line
+     at a time up the screen as the conversation went on, over the reactor;
+     now it keeps one height and the history scrolls inside it. A fifth of the
+     screen: a third took half the phone and, at 320×640, the edge of the ring.
+     svh is the height with the browser's bars showing, so the frame does not
+     jump as the address bar slides away; the vh line is for browsers without it. */
+  .dialog-panel {
+    height: clamp(110px, 21vh, 200px);
+    height: clamp(110px, 21svh, 200px);
+    max-height: none;
+  }
+  /* Tighter inside, so the small frame holds words rather than margins. */
+  .dialog-body { padding: 8px 10px; gap: 6px; }
+  .log-line { font-size: 13px; line-height: 1.35; }
   .hud .hud-bottom { left: 0; right: 0; }
   .hud:has(.dialog[data-open='1']) .hud-bottom { display: none; }
   /* Above the open window there is only the reactor, so they go to the top,

@@ -36,6 +36,12 @@ export function createDeepgramParser(hooks: ScribeHooks) {
     const text = held.trim()
     held = ''
     if (text) hooks.onCommitted(text)
+    // A phrase that ends with no words is still over, and the engine closes it
+    // — marks included. His own voice heard through a phone's speaker often
+    // ends that way, and its "began while he was speaking" mark used to stay
+    // for the user's next phrase, which was dropped: the first command after
+    // an answer went unheard.
+    else hooks.onPhraseEnd?.()
   }
 
   return {
@@ -76,11 +82,22 @@ export function createDeepgramParser(hooks: ScribeHooks) {
 export type DeepgramDeps = {
   url: string
   WebSocketCtor?: typeof WebSocket
-  capture: (onFrame: (frame: ArrayBuffer) => void) => Promise<{ stop: () => void }>
+  capture: (onFrame: (frame: ArrayBuffer) => void, onStall?: (why: 'audio-blocked' | 'audio-stalled') => void) => Promise<{ stop: () => void }>
 }
 
 /** Frames are dropped, not queued, when the socket cannot keep up: late audio is worse than lost audio. */
 const MAX_BUFFERED = 512 * 1024
+
+/**
+ * The page's own reasons for closing the session, so the bridge log says why a
+ * phone was deaf instead of an idle timeout 30 s later. Names nothing else.
+ */
+export const CLOSE_AUDIO_BLOCKED = 4010
+export const CLOSE_CAPTURE_FAILED = 4011
+/** The capture's worklet module did not load in time (audioStart.ts). */
+export const CLOSE_WORKLET_STALLED = 4012
+/** A running capture stopped delivering: the microphone's track ended (pcmCapture.ts). */
+export const CLOSE_AUDIO_STALLED = 4013
 
 /**
  * Open the bridge socket and, once the bridge says the upstream session is up,
@@ -108,15 +125,38 @@ export async function connectDeepgram(hooks: ScribeHooks, d: DeepgramDeps): Prom
     ...hooks,
     onStarted: () => {
       hooks.onStarted()
-      d.capture((frame) => {
-        if (ws.readyState === ws.OPEN && ws.bufferedAmount < MAX_BUFFERED) ws.send(frame)
-      }).then(
+      d.capture(
+        (frame) => {
+          if (ws.readyState === ws.OPEN && ws.bufferedAmount < MAX_BUFFERED) ws.send(frame)
+        },
+        // Mid-session: held audio needs a touch; a dead microphone, a new session.
+        (why) => {
+          if (closed) return
+          try {
+            ws.close(why === 'audio-blocked' ? CLOSE_AUDIO_BLOCKED : CLOSE_AUDIO_STALLED)
+          } catch {
+            /* already gone */
+          }
+          hooks.onError(why)
+        },
+      ).then(
         (c) => {
           if (closed) c.stop()
           else capture = c
         },
-        () => {
-          if (!closed) hooks.onError('capture')
+        (err: unknown) => {
+          if (closed) return
+          // The browser would not start the audio (audioStart.ts): a touch is
+          // needed, which the page asks for. Any other capture failure is the
+          // engine's, and the supervisor moves to the browser's recogniser.
+          const blocked = (err as Error)?.name === 'AudioBlockedError'
+          const stalled = blocked && (err as { step?: string }).step === 'worklet'
+          try {
+            ws.close(stalled ? CLOSE_WORKLET_STALLED : blocked ? CLOSE_AUDIO_BLOCKED : CLOSE_CAPTURE_FAILED)
+          } catch {
+            /* already gone */
+          }
+          hooks.onError(blocked ? 'audio-blocked' : 'capture')
         },
       )
     },

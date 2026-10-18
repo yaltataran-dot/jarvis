@@ -3,6 +3,8 @@ import type { AsideItem } from './aside'
 import type { Blade, Panel } from '../store'
 import { BRIDGE_WS_URL, LANG } from '../config'
 import { makeTurnLog } from './turnLog'
+import { createResumeClient } from './resume'
+import { createLink } from './redial'
 
 /** The page's own failure sentences, in the language he answers in. */
 const SAY =
@@ -94,18 +96,25 @@ type Frame = {
   kind?: string
   /** On a usage-limit error: when it lifts, as wall-clock "22:50". */
   resetAt?: string | null
+  /** On `resumed`: whether the bridge gave the conversation back. */
+  ok?: boolean
 }
 
 /**
  * A turn that failed for a reason outside JARVIS — the usage limit, the
  * network, the service — rather than a fault of his own. The page shows the
  * message but does not put the core into its error state for it.
+ *
+ * 'link' is the connection itself going under the question — a VPN or network
+ * switch — after the page had been connected: the socket is being redialled
+ * already, so it is shown as part of the reconnect (linkStatus.ts), not as a
+ * failure.
  */
 export class ServiceError extends Error {
-  readonly kind: 'rate' | 'service'
+  readonly kind: 'rate' | 'service' | 'link'
   readonly resetAt: string | null
 
-  constructor(message: string, kind: 'rate' | 'service', resetAt: string | null = null) {
+  constructor(message: string, kind: 'rate' | 'service' | 'link', resetAt: string | null = null) {
     super(message)
     this.name = 'ServiceError'
     this.kind = kind
@@ -116,8 +125,8 @@ export class ServiceError extends Error {
 /** Every question gets an id so its answer can be told from anyone else's. */
 let askSeq = 0
 
+/** The live socket, kept in step with the link below (redial.ts). */
 let socket: WebSocket | null = null
-let connecting: Promise<WebSocket> | null = null
 
 /** Server names reported by the bridge, for the HUD readout. */
 let servers: string[] = []
@@ -180,15 +189,31 @@ export function watchUi(fn: (op: string, args: any) => void) {
  * Connection state, for the UI.
  *
  *   'open'        — first connection of the page.
- *   'lost'        — the socket died. The agent session died with it, so
- *                   everything said so far is gone as far as JARVIS knows.
+ *   'lost'        — the socket died.
+ *   'resumed'     — we're back, and the bridge gave the conversation back
+ *                   (resume.ts): he remembers what was said.
  *   'reconnected' — we're back, on a fresh session with no memory of the above.
+ *   'down'        — the quick retries ran out and it is still not back. A page
+ *                   on screen keeps trying now and then (redial.ts).
+ *
+ * With 'resumed' and 'reconnected', `interrupted` says a question was in
+ * flight when the socket died: it was not asked again, and may not have
+ * finished.
  */
-export type ConnectionState = 'open' | 'lost' | 'reconnected'
-let onConnection: ((state: ConnectionState) => void) | null = null
-export function watchConnection(fn: (state: ConnectionState) => void) {
+export type ConnectionState = 'open' | 'lost' | 'resumed' | 'reconnected' | 'down'
+export type ConnectionDetail = { interrupted: boolean }
+let onConnection: ((state: ConnectionState, detail?: ConnectionDetail) => void) | null = null
+export function watchConnection(fn: (state: ConnectionState, detail?: ConnectionDetail) => void) {
   onConnection = fn
 }
+
+/** Asks for the conversation back on a reconnect — see resume.ts. */
+const resumer = createResumeClient({
+  send: (frame) => {
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame))
+  },
+  report: ({ resumed, interrupted }) => onConnection?.(resumed ? 'resumed' : 'reconnected', { interrupted }),
+})
 
 export function isConnected(): boolean {
   return socket?.readyState === WebSocket.OPEN
@@ -212,21 +237,18 @@ let firstReady = deferred()
 
 let everConnected = false
 
-/** Backoff for the automatic re-dial. It gives up after the last delay rather
- *  than retrying forever — a bridge that has been down for half a minute is
- *  usually one you stopped on purpose, and the next ask() re-dials anyway. */
-const RECONNECT_DELAYS = [500, 1000, 2000, 4000, 8000, 8000]
-let attempt = 0
-let reconnectTimer = 0
-
-function scheduleReconnect() {
-  if (attempt >= RECONNECT_DELAYS.length) return
-  const delay = RECONNECT_DELAYS[attempt]
-  attempt += 1
-  clearTimeout(reconnectTimer)
-  reconnectTimer = window.setTimeout(() => {
-    void connect().catch(() => {})
-  }, delay)
+/**
+ * Make sure the connection is alive: dial now, with a fresh set of retries, if
+ * there is no live socket, or ask an open one for a sign of life.
+ *
+ * For the page coming back to the screen or the network coming back: a phone
+ * that was out of signal for longer than the backoff had given up, and stayed
+ * disconnected until the next question. And a socket can be open in name
+ * only — a VPN switched on under it — so an open one is checked rather than
+ * trusted (redial.ts). Does nothing while a dial is already under way.
+ */
+export function reconnectNow(): void {
+  link.check()
 }
 
 /**
@@ -241,8 +263,11 @@ function dispatch(ws: WebSocket) {
     try {
       msg = JSON.parse(e.data as string)
     } catch {
+      link.heard(ws)
       return
     }
+    // Any frame is a sign of life; a pong is also the bridge saying it answers pings.
+    link.heard(ws, msg.type === 'pong')
 
     if (msg.type === 'ready') {
       // The bridge announces immediately on connect from Claude Code's config,
@@ -253,6 +278,10 @@ function dispatch(ws: WebSocket) {
         .filter(Boolean)
       onServers?.(servers)
       firstReady.resolve()
+    } else if (msg.type === 'session') {
+      resumer.onSession(msg.id)
+    } else if (msg.type === 'resumed') {
+      resumer.onResumed(msg.ok)
     } else if (msg.type === 'panel' && msg.panel) {
       onPanel?.(msg.panel)
     } else if (msg.type === 'blade' && msg.blade) {
@@ -287,80 +316,61 @@ function dispatch(ws: WebSocket) {
   })
 }
 
-function connect(): Promise<WebSocket> {
-  if (socket?.readyState === WebSocket.OPEN) return Promise.resolve(socket)
-  if (connecting) return connecting
-
-  firstReady = deferred()
-
-  connecting = new Promise<WebSocket>((resolve, reject) => {
-    const ws = new WebSocket(BRIDGE_WS_URL)
-    let settled = false
-
+/**
+ * One dial at a time, and the automatic re-dial after a drop or a failed dial
+ * — see redial.ts. The re-dial used to stop after its first failure.
+ */
+const link = createLink<WebSocket>({
+  make: () => new WebSocket(BRIDGE_WS_URL),
+  opened: (ws) => {
+    socket = ws
+    // Re-armed per connection so a reconnect re-announces.
+    firstReady = deferred()
+    dispatch(ws)
+    // A reconnect is reported once the bridge has said whether the conversation came back.
+    if (everConnected) resumer.onOpen(true)
+    else onConnection?.('open')
+    everConnected = true
+  },
+  lost: (ws) => {
+    if (socket === ws) socket = null
+    // Read before the turn's own close handler clears it: was a question in flight?
+    resumer.onLost(Boolean(pending))
+    onConnection?.('lost')
+    // A socket dropped for silence may never fire its close: the question on
+    // it fails now, as it would on a close, instead of waiting out its timer.
+    if (pending?.ws === ws) pending.lost?.()
+  },
+  ping: (ws) => ws.send(JSON.stringify({ type: 'ping' })),
+  visible: () => document.visibilityState !== 'hidden',
+  gaveUp: () => onConnection?.('down'),
+  failure: (why) => {
+    if (why === 'timeout') return new Error('Bridge not responding — is `npm run bridge` running?')
+    if (why === 'closed') return new Error('The bridge closed the connection.')
     /**
-     * Every terminal path runs through here, and clearing `connecting` is the
-     * whole point. The timeout used to reject without clearing it, which
-     * bricked the client: the fast path above hands that same dead promise to
-     * every later caller, so one slow start cost you a page reload.
+     * The browser will not tell us why.
+     *
+     * A refused handshake and a rejected Origin arrive here identically — no
+     * status, no reason, just `error` — and the two have completely different
+     * fixes. The old message named only one of them, and confidently: it said
+     * to start the bridge. When the real cause was the page being served on a
+     * port outside the range the bridge trusts, that advice sent everyone to
+     * inspect a process that was running perfectly the whole time.
+     *
+     * So say both, and put the actual port in front of them, since that is
+     * the fact that distinguishes the two cases at a glance.
      */
-    const settle = (err: Error | null) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      connecting = null
-      if (err) reject(err)
-      else resolve(ws)
-    }
+    return new Error(
+      `Cannot reach the bridge at ${BRIDGE_WS_URL}. Either it is not ` +
+        'running (start it with `npm start`), or this page is on a port it ' +
+        `refuses — it accepts localhost:5173-5199 and 4173-4199, and this ` +
+        `page is on ${location.port || '80'}.`,
+    )
+  },
+})
 
-    const timer = setTimeout(() => {
-      ws.close()
-      settle(new Error('Bridge not responding — is `npm run bridge` running?'))
-    }, 6000)
-
-    ws.onopen = () => {
-      socket = ws
-      attempt = 0
-      dispatch(ws)
-      settle(null)
-      onConnection?.(everConnected ? 'reconnected' : 'open')
-      everConnected = true
-    }
-    ws.onerror = () => {
-      /**
-       * The browser will not tell us why.
-       *
-       * A refused handshake and a rejected Origin arrive here identically — no
-       * status, no reason, just `error` — and the two have completely different
-       * fixes. The old message named only one of them, and confidently: it said
-       * to start the bridge. When the real cause was the page being served on a
-       * port outside the range the bridge trusts, that advice sent everyone to
-       * inspect a process that was running perfectly the whole time.
-       *
-       * So say both, and put the actual port in front of them, since that is
-       * the fact that distinguishes the two cases at a glance.
-       */
-      settle(
-        new Error(
-          `Cannot reach the bridge at ${BRIDGE_WS_URL}. Either it is not ` +
-            'running (start it with `npm start`), or this page is on a port it ' +
-            `refuses — it accepts localhost:5173-5199 and 4173-4199, and this ` +
-            `page is on ${location.port || '80'}.`,
-        ),
-      )
-    }
-    ws.onclose = () => {
-      // A close before open is just a failed dial; after open it's a lost
-      // session, and the two want different handling.
-      settle(new Error('The bridge closed the connection.'))
-      if (socket === ws) {
-        socket = null
-        onConnection?.('lost')
-        scheduleReconnect()
-      }
-    }
-  })
-
-  return connecting
+function connect(): Promise<WebSocket> {
+  return link.connect()
 }
 
 /** Open the socket early so the first "Hey Jarvis" isn't waiting on a handshake. */
@@ -394,7 +404,7 @@ const IDLE_TIMEOUT_MS = 120_000
 const TURN_LIMIT_MS = 180_000
 
 /** The turn in flight, so a barge-in can settle it locally. */
-let pending: { finish: (fallback?: string) => void } | null = null
+let pending: { finish: (fallback?: string) => void; ws?: WebSocket; lost?: () => void } | null = null
 
 export async function ask(
   prompt: string,
@@ -444,7 +454,9 @@ export async function ask(
   } catch (err) {
     pending = null
     trace('ask:connect-failed')
-    throw err
+    // Never connected at all is a setup problem and stays one; a page that was
+    // connected is between networks, and the redial is on it.
+    throw everConnected ? new ServiceError(SAY.failed, 'link') : err
   }
 
   // Barged in on before the socket was even up. Nothing was ever asked.
@@ -563,13 +575,13 @@ export async function ask(
     }
 
     const onClose = () => {
-      fail(new Error(SAY.closed))
+      fail(new ServiceError(SAY.closed, 'link'))
     }
     const onError = () => {
-      fail(new Error(SAY.failed))
+      fail(new ServiceError(SAY.failed, 'link'))
     }
 
-    pending = { finish }
+    pending = { finish, ws, lost: onClose }
     ws.addEventListener('message', onMessage)
     ws.addEventListener('close', onClose)
     ws.addEventListener('error', onError)

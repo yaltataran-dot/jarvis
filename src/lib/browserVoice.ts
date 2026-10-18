@@ -2,6 +2,8 @@ import { L, OVERRIDE, R, STOP_ONLY, STOP_TAIL } from './stopWords'
 import { isEcho, norm } from './echo'
 import { isBargeIn } from './bargeIn'
 import { makeLedger, type Result } from './ledger'
+import { micPermission } from './lifecycle'
+import { speechRefusalMessage } from './micErrors'
 import {
   LATE_FINAL_MS,
   READY_MS,
@@ -475,7 +477,12 @@ export function startBrowserVoice(h: VoiceHandlers, d: BrowserVoiceDeps): Voice 
         refused = true
         diag.running = false
         settleReady(false)
-        h.onError('Microphone access was refused — voice input is unavailable.')
+        // Not always the user: on Android this comes with the permission
+        // granted, when the page already holds the microphone. Say which.
+        void micPermission().then((permission) => {
+          trace('voice:refused', { code, permission })
+          h.onError(speechRefusalMessage(code, permission, d.lang === 'en' ? 'en' : 'ru'))
+        })
       }
     }
     r.onend = () => {

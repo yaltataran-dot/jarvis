@@ -35,7 +35,15 @@ export type VoiceHandlers = {
   onUtterance: (text: string, id: number) => void
   /** The recogniser is unusable. Distinct from the user saying nothing. */
   onError: (message: string) => void
+  /** How the realtime recogniser is doing, for the status line (voiceSupervisor.ts). */
+  onHealth?: (health: VoiceHealth) => void
 }
+
+/**
+ * The realtime recogniser's state: hearing, coming back after a drop, replaced
+ * by the browser's own, or stopped until the user touches the screen.
+ */
+export type VoiceHealth = 'live' | 'recovering' | 'fallback' | 'down'
 
 export type Voice = {
   stop: () => void
@@ -59,6 +67,8 @@ export type Voice = {
    * Absent on engines that cannot tell.
    */
   idle?: () => boolean
+  /** The realtime recogniser's state, where a supervisor runs one. */
+  health?: () => VoiceHealth
 }
 
 /** A loop that never started. */

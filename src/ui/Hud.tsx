@@ -8,7 +8,8 @@ import { Pointer } from './Pointer'
 import { GestureGuide } from './GestureGuide'
 import { LANG } from '../config'
 import { HUD_IN } from '../lib/bootTimeline'
-import { coreMode, type CoreMode } from '../lib/coreMode'
+import { coreMode, hearingStatus, type CoreMode } from '../lib/coreMode'
+import { reconnectNow } from '../lib/bridge'
 
 const ru = LANG === 'ru'
 
@@ -74,6 +75,7 @@ const coreLabel: Record<CoreMode, string> = ru
       listening: 'Слушаю',
       processing: 'Обработка',
       speaking: 'Ответ',
+      recovering: 'Восстановление',
       error: 'Ошибка',
     }
   : {
@@ -82,6 +84,7 @@ const coreLabel: Record<CoreMode, string> = ru
       listening: 'Listening',
       processing: 'Processing',
       speaking: 'Responding',
+      recovering: 'Recovering',
       error: 'Error',
     }
 
@@ -444,6 +447,8 @@ export function Hud() {
   const connected = useStore((s) => s.connected)
   const error = useStore((s) => s.error)
   const errorKind = useStore((s) => s.errorKind)
+  const link = useStore((s) => s.link)
+  const linkNote = useStore((s) => s.linkNote)
   const level = useStore((s) => s.level)
   const voice = useStore((s) => s.voice)
   const bootNote = useStore((s) => s.bootNote)
@@ -455,7 +460,8 @@ export function Hud() {
   // variable on the root carries a theme change into every .hud-* rule without
   // a single component knowing a theme exists.
   const colour = accentFor(phase, ui)
-  const mode = coreMode(phase, error, errorKind)
+  const voiceHealth = useStore((s) => s.voiceHealth)
+  const mode = coreMode(phase, error, errorKind, voiceHealth)
 
   useEffect(() => {
     // The ground has to be set on the document, not painted here: the HUD sits
@@ -503,7 +509,7 @@ export function Hud() {
                 the right thing to show during boot — as a general fallback a
                 note that never got cleared (a stuck 'voice 97%') sits over
                 LISTENING and PROCESSING for the rest of the session. */}
-            {phase === 'boot' && bootNote ? bootNote : statusText[phase]}
+            {phase === 'boot' && bootNote ? bootNote : (hearingStatus(phase, voiceHealth, ru) ?? statusText[phase])}
           </span>
         </div>
       </header>
@@ -572,6 +578,30 @@ export function Hud() {
       {ui.chrome.suggestions && <Suggestions />}
 
       {error && <div className="error">{error}</div>}
+
+      {/* The connection (linkStatus.ts). A drop being mended is a quiet line,
+          not the red plate — and only after a moment, so a blink of the
+          network shows nothing at all. A lasting outage is said plainly, with
+          a way to try now. A note about the last reconnect sits on the quiet
+          line until the next question. */}
+      {link === 'reconnecting' && (
+        <div className={'link-status link-wait' + (error ? ' raised' : '')} role="status">
+          {ru ? 'Переподключение…' : 'Reconnecting…'}
+        </div>
+      )}
+      {link === 'down' && (
+        <div className={'error link-down' + (error ? ' raised' : '')} role="alert">
+          {ru ? 'Нет связи с мостом. Пробую снова раз в полминуты.' : 'No connection to the bridge. Trying again every half minute.'}{' '}
+          <button type="button" className="link-retry" onClick={() => reconnectNow()}>
+            {ru ? 'Подключиться' : 'Reconnect'}
+          </button>
+        </div>
+      )}
+      {link === 'ok' && linkNote && (
+        <div className={'link-status' + (error ? ' raised' : '')} role="status">
+          {linkNote}
+        </div>
+      )}
 
       <footer className="hud-bottom">
         <span className="hint">
