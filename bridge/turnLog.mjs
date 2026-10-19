@@ -41,6 +41,28 @@ export function cleanInfo(info, dialog) {
   return out
 }
 
+/**
+ * A `trace` frame from the page: a diagnostic breadcrumb. Whitelisted shape,
+ * every field truncated, so nothing the page sends can flood or forge the
+ * log. Only while tracing is on (`on`), and only with a string step; written
+ * to the turn log, when there is one, and printed as one `[trace]` line.
+ * Moved from server.mjs's frame dispatch unchanged.
+ *
+ * @param {{ step?: unknown, at?: unknown, info?: unknown }} msg
+ * @param {{ on: boolean, dialog: boolean, turnLog: { add(step: string, info: object, at: number): void } | null }} o
+ */
+export function recordTrace(msg, { on, dialog, turnLog }) {
+  if (on && typeof msg.step === 'string') {
+    const at = typeof msg.at === 'number' ? msg.at : Date.now()
+    const info = cleanInfo(msg.info, dialog)
+    turnLog?.add(msg.step, info, at)
+    const line = Object.entries(info)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ')
+    console.log(`[trace] ${msg.step.slice(0, 40)} ${line}`)
+  }
+}
+
 export function createTurnLog({ dir, maxBytes = 2 * 1024 * 1024, files = 3, dialog = false, maxQueue = 2000 }) {
   const base = join(dir, 'trace.jsonl')
   const nth = (i) => (i === 0 ? base : `${base}.${i}`)

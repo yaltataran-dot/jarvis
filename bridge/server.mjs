@@ -34,7 +34,7 @@ import { fallbackDownMessage, limitMidTurnMessage, noLoginFrame, resultFailures,
 import { createTurns } from './turns.mjs'
 import { createAccounts } from './accounts.mjs'
 import { createBudget, createFallback, fallbackConfig, fileStore } from './fallback.mjs'
-import { cleanInfo, createTurnLog } from './turnLog.mjs'
+import { createTurnLog, recordTrace } from './turnLog.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
 import { createYandexMusic } from './yandexMusic.mjs'
@@ -1193,16 +1193,9 @@ wss.on('connection', (socket, req) => {
 
     // A diagnostic breadcrumb from the page. Whitelisted shape, every field
     // truncated, so nothing the page sends can flood or forge the log.
+    // (turnLog.mjs)
     if (msg.type === 'trace') {
-      if (TRACE && typeof msg.step === 'string') {
-        const at = typeof msg.at === 'number' ? msg.at : Date.now()
-        const info = cleanInfo(msg.info, DIALOG_LOG)
-        TURN_LOG?.add(msg.step, info, at)
-        const line = Object.entries(info)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(' ')
-        console.log(`[trace] ${msg.step.slice(0, 40)} ${line}`)
-      }
+      recordTrace(msg, { on: TRACE, dialog: DIALOG_LOG, turnLog: TURN_LOG })
       return
     }
 

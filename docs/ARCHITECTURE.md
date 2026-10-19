@@ -96,7 +96,7 @@ resume), the input stream to the SDK, the SDK stream turned into frames
 per other login (`accounts.mjs`, `turns.mjs`) — and the page frames'
 dispatch. Those share one socket's mutable state, so they move only where a
 piece stands alone: `pageRequests.mjs`, `toolBadge.mjs`, `latency.mjs`, the session's
-inbox (`inbox.mjs`), and what
+inbox (`inbox.mjs`), the page's trace frames (`recordTrace` in `turnLog.mjs`), and what
 a turn's result means (`turnResult.mjs`), which the stream calls with the turn's
 values and then ends the turn itself, in the same order as before. Routes moved one at a time,
 each with tests written against the code while it was still in `server.mjs`
