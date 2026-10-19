@@ -69,7 +69,7 @@ are the largest remaining extraction (see the plan).
 
 | Module | Files |
 |---|---|
-| **server** (composition, HTTP routes, socket handling, tool policy, sessions) | `server.mjs` |
+| **server** (composition: start-up wiring, HTTP dispatch, the agent socket and its sessions) | `server.mjs` |
 | turns and failures | `turns.mjs`, `turnText.mjs`, `failures.mjs`, `effort.mjs`, `fallback.mjs`, `accounts.mjs`, `resumable.mjs`, `turnLog.mjs` |
 | speech | `deepgramProxy.mjs`, `piper.mjs` |
 | tools | `computer.mjs`, `pc.mjs`, `chrome.mjs`, `panels.mjs`, `ui.mjs`, `vision.mjs`, `visual.mjs`, `page.mjs`, `net.mjs`, `calendar.mjs`, `googleCalendar.mjs`, `music.mjs`, `yandexMusic.mjs` |
@@ -84,10 +84,17 @@ are the largest remaining extraction (see the plan).
 | system prompt | `prompt.mjs` (who JARVIS is and how he speaks: the English prompt, with the Russian head and tail for `ru`; `systemPromptFor(lang)`, the language decided in `server.mjs` from `LANG`; the text is pinned by SHA-256 per language in `tests/prompt.test.mjs`, so an edit to it is never silent) |
 | HTTP routes | `http/page.mjs` (`GET /page`; a remote web page served from the bridge's origin so it can be framed — the fetch, both modes and the SSRF gate stay in `page.mjs` and `net.mjs`; `bridgeOrigin`, `http://localhost:` and the port, is built in `server.mjs` and passed in; failures are an HTML error page, not redacted), `http/proxy.mjs` (`GET /img`, `GET /media`; remote images, video and audio fetched by the bridge — the SSRF gate and the guarded clients stay in `net.mjs`, shared with `page.mjs`; redaction passed in), `http/file.mjs` (`GET /file`; local images only — the image types, the size limit and the roots stay in `server.mjs` and are passed in, the containment check is built there from `withinRootsOf`), `http/stt.mjs` (`POST /stt`, one recorded segment to ElevenLabs Scribe; not the realtime `/stt-stream` socket), `http/tts.mjs` (`POST /tts`; ElevenLabs streamed or Piper, with the fallbacks; key, voices, synthesis and redaction passed in), `http/health.mjs` (`GET /health`; the keys and the engine choice stay in `server.mjs` and are passed in), `http/scribe-token.mjs` (`GET /scribe-token`; strict Origin rule, key and the shared two-second gap stay in `server.mjs` and are passed in; tokens are ElevenLabs' single-use ones, never kept by the bridge), `http/knowledge.mjs` (`POST /knowledge/answer`), `http/calendar.mjs` (`POST /calendar`; what may be written stays with `googleCalendar.mjs`), `http/music.mjs` (`POST /music`; actions and player calls stay with `yandexMusic.mjs`) |
 
-`server.mjs` is the bridge's composition root. It still holds the other HTTP
-routes and the session protocol, and it keeps everything that comes before
-any route — the Host and Origin checks, `OPTIONS`, the CORS headers — handing
-a moved route only the `cors` headers it built. Routes move one at a time,
+`server.mjs` is the bridge's composition root. Every HTTP route now lives in
+`http/`; `server.mjs` keeps the dispatch and everything that comes before any
+route — the Host and Origin checks (`access.mjs`), `OPTIONS`, the CORS
+headers — handing a route only the `cors` headers it built. It also wires the
+start-up (settings, policy, prompt, the shared services) and holds the agent
+socket: per connection, the session's lifecycle (open, restart, switch login,
+resume), the input stream to the SDK, the SDK stream turned into frames
+(`pump`), the turn queue's wiring and the page frames' dispatch. Those share
+one socket's mutable state and the login switching that `accounts.mjs` and
+`turns.mjs` are changing, so they have not moved; the pieces that stand alone
+have (`pageRequests.mjs`, `toolBadge.mjs`, `latency.mjs`). Routes moved one at a time,
 each with tests written against the code while it was still in `server.mjs`
 (`tests/policy.test.mjs`, `tests/httpKnowledge.test.mjs`, `tests/httpCalendar.test.mjs`,
 `tests/httpMusic.test.mjs`, `tests/httpHealth.test.mjs`, `tests/httpScribeToken.test.mjs`,
