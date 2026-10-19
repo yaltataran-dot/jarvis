@@ -83,7 +83,11 @@ test('wiring: the bridge builds one policy from its writes switch and uses it at
   assert.match(server, /const ALLOW_WRITES = WRITES\.allowed/)
   assert.match(server, /disallowedTools: DISALLOWED_BUILTINS,/, 'taken from the model through the SDK')
   assert.match(server, /canUseTool: async \(toolName\) => \{\n\s+const ok = decideTool\(toolName\)/, 'the last gate')
-  assert.match(server, /if \(decideTool\(name\)\) return sendTurn\(\{ type: 'tool', name \}\)/, 'the HUD announces only what may run')
+  // The HUD announces only what may run: the badge (toolBadge.mjs) asks the same decideTool, and
+  // server.mjs hands it that one and the tool frame.
+  const badge = readFileSync(new URL('../bridge/toolBadge.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(badge, /if \(decideTool\(name\)\) return show\(name\)/, 'the HUD announces only what may run')
+  assert.match(server, /createToolBadge\(\{\n {4}decideTool,\n {4}show: \(name\) => sendTurn\(\{ type: 'tool', name \}\),/)
   for (const gone of ['const READ_ONLY_BUILTINS', 'const WRITE_BUILTINS', 'const READ_ONLY_MCP', 'const READ_VERB', 'const EFFECTFUL_VERB', 'const VETO_EXEMPT', 'function decideTool']) {
     assert.ok(!server.includes(gone), `${gone} lives in policy.mjs only`)
   }
