@@ -274,9 +274,11 @@ test('the bridge is wired to all of it', () => {
   assert.match(server, /installLogRedaction\(console\)/)
   assert.match(server, /send\(\{ type: 'error', message: redactSecrets\(/)
   // Both shells are out of the model's reach in the default mode, and denied if they turn up.
-  const disallowed = /: \[('Read'[^\]]*)\]/.exec(server.slice(server.indexOf('const DISALLOWED_BUILTINS')))?.[1] ?? ''
+  // The lists live in the tool policy (policy.mjs; behaviour in policy.test.mjs).
+  const policy = readFileSync(new URL('../bridge/policy.mjs', import.meta.url), 'utf8')
+  const disallowed = /: \[('Read'[^\]]*)\]/.exec(policy.slice(policy.indexOf('const DISALLOWED_BUILTINS')))?.[1] ?? ''
   for (const shell of ["'Bash'", "'PowerShell'"]) assert.ok(disallowed.includes(shell), `${shell} not disallowed`)
-  const writeSet = server.slice(server.indexOf('const WRITE_BUILTINS'), server.indexOf('])', server.indexOf('const WRITE_BUILTINS')))
+  const writeSet = policy.slice(policy.indexOf('const WRITE_BUILTINS'), policy.indexOf('])', policy.indexOf('const WRITE_BUILTINS')))
   assert.ok(writeSet.includes("'PowerShell'") && writeSet.includes("'Bash'"))
   for (const f of ['server.mjs', 'computer.mjs', 'piper.mjs', 'yandexMusic.mjs', 'googleCalendar.mjs']) {
     const src = readFileSync(new URL(`../bridge/${f}`, import.meta.url), 'utf8')

@@ -75,10 +75,12 @@ are the largest remaining extraction (see the plan).
 | tools | `computer.mjs`, `pc.mjs`, `chrome.mjs`, `panels.mjs`, `ui.mjs`, `vision.mjs`, `visual.mjs`, `page.mjs`, `net.mjs`, `calendar.mjs`, `googleCalendar.mjs`, `music.mjs`, `yandexMusic.mjs` |
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
+| tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
 
-`server.mjs` is the bridge's composition root and still holds the HTTP routes,
-the tool permission policy and the session protocol; splitting those out is a
-later step.
+`server.mjs` is the bridge's composition root and still holds the HTTP routes
+and the session protocol; splitting those out is a later step. The tool
+policy moved out unchanged (`tests/policy.test.mjs` was written against the
+code in `server.mjs` before the move).
 
 ## Contracts (page ↔ bridge)
 
