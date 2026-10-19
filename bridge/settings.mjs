@@ -1,12 +1,13 @@
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os'
-import { join, resolve as resolvePath } from 'node:path'
+import { delimiter as pathDelimiter, join, resolve as resolvePath } from 'node:path'
 import { cleanKey } from './deepgramProxy.mjs'
 
 /**
  * What the bridge reads at start-up from its environment and from Claude
  * Code's own config (~/.claude.json): the language, the MCP servers, the voice
- * keys and the recognition engine, the computer roots and the file roots.
+ * keys and the recognition engine, the computer roots and the file roots, and
+ * the backup Claude logins' directories.
  *
  * Moved out of server.mjs unchanged, as functions of the environment and the
  * home directory so each can be tested on its own. server.mjs calls each where
@@ -124,6 +125,66 @@ export function pcRoots(env, projectRoot) {
     projectRoot,
     ...(env.JARVIS_PC_ROOTS ?? '').split(';').map((s) => s.trim()).filter(Boolean),
   ]
+}
+
+/**
+ * The backup Claude logins' config directories, from JARVIS_CLAUDE_BACKUP_DIR:
+ * one directory as before, or several separated by the platform's path
+ * delimiter (`;` on Windows, `:` elsewhere), in the order they are preferred.
+ *
+ * Only directories that exist are kept — none is ever created. An entry that
+ * is the primary login's own directory, or repeats an earlier one (compared
+ * after resolving links, and without case on Windows), is left out too: two
+ * labels on one login would let a question be asked twice on the same limit.
+ * Each refusal is logged by its position only; the paths are the user's.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @param {{
+ *   primaryDir: string,
+ *   delimiter?: string,
+ *   isDirectory?: (dir: string) => boolean,
+ *   realpath?: (dir: string) => string,
+ *   platform?: string,
+ * }} o
+ * @returns {string[]}
+ */
+export function backupLoginDirs(env, { primaryDir, delimiter = pathDelimiter, isDirectory = isDir, realpath = realpathSync, platform = process.platform }) {
+  const entries = (env.JARVIS_CLAUDE_BACKUP_DIR ?? '')
+    .split(delimiter)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const key = (dir) => {
+    let real
+    try {
+      real = realpath(dir)
+    } catch {
+      real = resolvePath(dir)
+    }
+    return platform === 'win32' ? real.toLowerCase() : real
+  }
+  const one = entries.length === 1
+  const which = (i) => (one ? 'JARVIS_CLAUDE_BACKUP_DIR' : `JARVIS_CLAUDE_BACKUP_DIR entry ${i + 1} of ${entries.length}`)
+  const off = one ? 'backup login off' : 'skipped'
+  const primary = key(primaryDir)
+  const seen = new Map()
+  const out = []
+  entries.forEach((dir, i) => {
+    if (!isDirectory(dir)) return console.warn(`[jarvis] ${which(i)} is not a directory — ${off}`)
+    const k = key(dir)
+    if (k === primary) return console.warn(`[jarvis] ${which(i)} is the primary login's own directory — ${off}`)
+    if (seen.has(k)) return console.warn(`[jarvis] ${which(i)} repeats entry ${seen.get(k) + 1} — ${off}`)
+    seen.set(k, i)
+    out.push(dir)
+  })
+  return out
+}
+
+const isDir = (dir) => {
+  try {
+    return statSync(dir).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 /**

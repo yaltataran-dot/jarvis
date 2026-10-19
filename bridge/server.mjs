@@ -24,7 +24,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
 import { effortFor } from './effort.mjs'
@@ -70,7 +70,7 @@ import { createAccess } from './access.mjs'
 import { createPageRequests } from './pageRequests.mjs'
 import { createToolBadge } from './toolBadge.mjs'
 import { latNew, latencyLine, ms } from './latency.mjs'
-import { configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from './settings.mjs'
+import { backupLoginDirs, configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from './settings.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 // Loopback only by default. Bound to every interface, the agent socket and the
@@ -213,37 +213,24 @@ if (KNOWLEDGE.kb) console.log('[knowledge] ready')
  * question after the time passes goes to the model as normal. Bridge-wide,
  * because the limit belongs to the account, not to one page.
  *
- * Held per login (accounts.mjs): with a second one in JARVIS_CLAUDE_BACKUP_DIR,
- * a limited primary hands new sessions to the backup until its time passes,
- * and the model is held off only while both are.
+ * Held per login (accounts.mjs): with backups in JARVIS_CLAUDE_BACKUP_DIR (one
+ * directory, or several on the path delimiter — settings.mjs), a limited login
+ * hands new sessions to the next one free until its time passes, and the model
+ * is held off only while every one is.
  */
 const LIMIT_PAUSE_FALLBACK_MS = 60_000
 /** Never trust a parsed time to hold the model off for longer than this. */
 const LIMIT_PAUSE_MAX_MS = 6 * 60 * 60_000
 /** A login that refused itself, or whose session would not start, is left alone this long. */
 const ACCOUNT_DOWN_MS = 15 * 60_000
-const ACCOUNTS = createAccounts({ backupDir: backupLoginDir(process.env.JARVIS_CLAUDE_BACKUP_DIR) })
-if (ACCOUNTS.switchable()) console.log('[jarvis] claude logins: primary, backup')
+// The primary login's directory, as the agent finds it — never also a backup.
+const PRIMARY_LOGIN_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+const ACCOUNTS = createAccounts({ backupDirs: backupLoginDirs(process.env, { primaryDir: PRIMARY_LOGIN_DIR }) })
+if (ACCOUNTS.switchable()) console.log(`[jarvis] claude logins: ${ACCOUNTS.labels().join(', ')}`)
 
 /** The limit's sentence; with two logins and both held off, it says so. */
 const limitMessage = (clock, everyLogin) =>
   (everyLogin && ACCOUNTS.switchable() ? allLoginsLimitedMessage : rateLimitMessage)(clock, LANG)
-
-/**
- * The backup login's directory, when it is set and is one. Logged by label
- * only: the path is the user's, and the login in it is theirs too.
- */
-function backupLoginDir(raw) {
-  const dir = raw?.trim()
-  if (!dir) return null
-  try {
-    if (statSync(dir).isDirectory()) return dir
-  } catch {
-    // Missing: said below.
-  }
-  console.warn('[jarvis] JARVIS_CLAUDE_BACKUP_DIR is not a directory — backup login off')
-  return null
-}
 
 // Where the computer tools may work (settings.mjs).
 const PC_ROOTS = pcRoots(process.env, PROJECT_ROOT)
@@ -1214,6 +1201,8 @@ wss.on('connection', (socket, req) => {
       limitMidTurn: () => limitMidTurnMessage(LANG),
     },
     waitCapMs: TURN_WAIT_CAP_MS,
+    // One more try per other login, never on one the question has been on (turns.mjs).
+    maxSwitches: ACCOUNTS.labels().length - 1,
     primary: {
       hand(turn) {
         const { text, asides, lat: received } = turn.item
@@ -1264,12 +1253,14 @@ wss.on('connection', (socket, req) => {
         const to = ACCOUNTS.pick()
         if (to && to !== account) switchTo(to, ACCOUNTS.held(account) ? `${account} held off` : `${to} back`)
       },
-      // After a limit: another login that is free, if there is one.
-      switchAccount() {
-        const to = ACCOUNTS.pick()
+      // The login this connection's session is on, for the turn's list of logins tried.
+      account: () => account,
+      // After a limit: the next login that is free and this question has not been on.
+      switchAccount(tried) {
+        const to = ACCOUNTS.pick(Date.now(), tried)
         if (!to || to === account) return false
         switchTo(to, `${account} limited`)
-        return true
+        return to
       },
       // Every login's limit is reached and none has lifted yet: no request against them.
       pausedFrame() {

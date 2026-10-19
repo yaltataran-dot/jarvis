@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
-import { configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from '../bridge/settings.mjs'
+import { delimiter, join, resolve, sep } from 'node:path'
+import { backupLoginDirs, configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from '../bridge/settings.mjs'
 
 /**
  * Start-up settings (bridge/settings.mjs) on their own. The running bridge is
@@ -106,4 +106,59 @@ test('file roots: home, the temp folder, /tmp, then JARVIS_FILE_ROOTS on ",", ea
     }
   }
   assert.deepEqual(roots, [realpathSync(home), realpathSync(home), real('/tmp'), realpathSync(extra), resolve(missing)])
+})
+
+test('backup logins: one directory as before, or several on the path delimiter, in order; nothing is created', (t) => {
+  const home = withHome(t)
+  const [a, b] = ['login-a', 'login-b'].map((n) => {
+    const d = join(home, n)
+    mkdirSync(d)
+    return d
+  })
+  const primaryDir = join(home, '.claude')
+  const warn = t.mock.method(console, 'warn', () => {})
+  assert.deepEqual(backupLoginDirs({}, { primaryDir }), [])
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: '  ' }, { primaryDir }), [])
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: ` ${a} ` }, { primaryDir }), [a])
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: [a, '', b].join(delimiter) }, { primaryDir }), [a, b])
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: `${b}|${a}` }, { primaryDir, delimiter: '|' }), [b, a])
+  assert.equal(warn.mock.callCount(), 0)
+  const missing = join(home, 'no-such-login')
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: missing }, { primaryDir }), [])
+  assert.equal(existsSync(missing), false, 'never created')
+})
+
+test('backup logins: a missing directory, a repeat and the primary\'s own are left out, said by position and never by path', (t) => {
+  const home = withHome(t)
+  const a = join(home, 'login-a')
+  const primaryDir = join(home, '.claude')
+  mkdirSync(a)
+  mkdirSync(primaryDir)
+  const warn = t.mock.method(console, 'warn', () => {})
+  const missing = join(home, 'no-such-login')
+  const dirs = backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: [a, missing, `${a}${sep}`, primaryDir, join(a, '..', 'login-a')].join(delimiter) }, { primaryDir })
+  assert.deepEqual(dirs, [a])
+  const lines = warn.mock.calls.map((c) => c.arguments.join(' '))
+  assert.deepEqual(lines, [
+    '[jarvis] JARVIS_CLAUDE_BACKUP_DIR entry 2 of 5 is not a directory — skipped',
+    '[jarvis] JARVIS_CLAUDE_BACKUP_DIR entry 3 of 5 repeats entry 1 — skipped',
+    "[jarvis] JARVIS_CLAUDE_BACKUP_DIR entry 4 of 5 is the primary login's own directory — skipped",
+    '[jarvis] JARVIS_CLAUDE_BACKUP_DIR entry 5 of 5 repeats entry 1 — skipped',
+  ])
+  for (const l of lines) assert.doesNotMatch(l, /login-a|no-such-login|\.claude|jarvis-settings-unit/)
+})
+
+test('backup logins: one entry keeps the old sentences; on Windows two spellings of one folder are one', (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const isDirectory = () => true
+  const realpath = (d) => d
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: '/nope' }, { primaryDir: '/p', isDirectory: () => false, realpath }), [])
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: '/p' }, { primaryDir: '/p', isDirectory, realpath }), [])
+  assert.deepEqual(warn.mock.calls.map((c) => c.arguments[0]), [
+    '[jarvis] JARVIS_CLAUDE_BACKUP_DIR is not a directory — backup login off',
+    "[jarvis] JARVIS_CLAUDE_BACKUP_DIR is the primary login's own directory — backup login off",
+  ])
+  const win = { delimiter: ';', isDirectory, realpath: (d) => d }
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: 'C:\\L\\B;c:\\l\\b' }, { primaryDir: 'C:\\P', platform: 'win32', ...win }), ['C:\\L\\B'])
+  assert.deepEqual(backupLoginDirs({ JARVIS_CLAUDE_BACKUP_DIR: '/l/B;/l/b' }, { primaryDir: '/p', platform: 'linux', ...win }), ['/l/B', '/l/b'], 'case counts elsewhere')
 })

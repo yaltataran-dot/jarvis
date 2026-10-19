@@ -1,11 +1,11 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
 import { networkInterfaces, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import WebSocket from 'ws'
 
 /**
@@ -315,7 +315,7 @@ test('a backup login directory is taken by label, and a missing one turns the ba
   assert.doesNotMatch(plain.log(), /claude logins|JARVIS_CLAUDE_BACKUP_DIR/)
   const backupDir = mkdtempSync(join(home, 'login-backup-'))
   const withBackup = await boot({ JARVIS_CLAUDE_BACKUP_DIR: backupDir })
-  assert.match(withBackup.log(), /claude logins: primary, backup/)
+  assert.match(withBackup.log(), /claude logins: primary, backup\n/)
   const missing = await boot({ JARVIS_CLAUDE_BACKUP_DIR: join(home, 'no-such-login') })
   // A warning on stderr; "listening" came on stdout and may have won the race.
   await waitForLog(missing, /JARVIS_CLAUDE_BACKUP_DIR is not a directory — backup login off/)
@@ -323,4 +323,22 @@ test('a backup login directory is taken by label, and a missing one turns the ba
   assert.doesNotMatch(missing.log(), /claude logins/)
   // The directory is the user's: neither path reaches the log.
   for (const b of [withBackup, missing]) assert.doesNotMatch(b.log(), /login-backup-|no-such-login/)
+})
+
+test('several backup logins on the path delimiter: labelled in order; a repeat, a missing one and the primary login\'s own are left out, by position only', async () => {
+  const b = mkdtempSync(join(home, 'login-second-'))
+  const c = mkdtempSync(join(home, 'login-third-'))
+  // The primary login's directory, as the bridge finds it here: HOME/.claude.
+  mkdirSync(join(home, '.claude'), { recursive: true })
+  const list = [b, join(home, 'no-such-login'), c, b, join(home, '.claude')].join(delimiter)
+  const several = await boot({ JARVIS_CLAUDE_BACKUP_DIR: list })
+  assert.match(several.log(), /\[jarvis\] claude logins: primary, backup, backup2\n/)
+  await waitForLog(several, /entry 5 of 5 is the primary login's own directory — skipped/)
+  assert.match(several.log(), /JARVIS_CLAUDE_BACKUP_DIR entry 2 of 5 is not a directory — skipped/)
+  assert.match(several.log(), /JARVIS_CLAUDE_BACKUP_DIR entry 4 of 5 repeats entry 1 — skipped/)
+  assert.doesNotMatch(several.log(), /backup login off/)
+  // None of the paths, nor the user's home, reaches the log.
+  assert.doesNotMatch(several.log(), /login-second-|login-third-|no-such-login|jarvis-bind-|\.claude[\\/]/)
+  // The bridge serves as before.
+  assert.equal(await get({ port: several.port, host: 'localhost' }), 200)
 })

@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createTurns } from '../bridge/turns.mjs'
 import { createAccounts } from '../bridge/accounts.mjs'
+import { readFileSync } from 'node:fs'
 
 /** Timers that fire only when the test says so. */
 function manualTimers() {
@@ -734,4 +735,19 @@ test('three logins: without maxSwitches (the wiring as it was) a question still 
   turns.primaryEnded(RATE)
   assert.deepEqual(handed, ['a1@primary', 'a1@backup'])
   assert.deepEqual(sent, [{ ...RATE.frame, ask: 'a1' }])
+})
+
+test('server.mjs wires the logins as loginRig does: one try per other login, the login it is on, the next untried one', () => {
+  const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(server, /^ {4}maxSwitches: ACCOUNTS\.labels\(\)\.length - 1,$/m)
+  assert.match(server, /^ {6}account: \(\) => account,$/m)
+  assert.match(
+    server,
+    /switchAccount\(tried\) \{\n {8}const to = ACCOUNTS\.pick\(Date\.now\(\), tried\)\n {8}if \(!to \|\| to === account\) return false\n {8}switchTo\(to, `\$\{account\} limited`\)\n {8}return to\n {6}\}/,
+  )
+  // The logins come from JARVIS_CLAUDE_BACKUP_DIR through settings.mjs, the primary's own directory left out.
+  assert.match(server, /const ACCOUNTS = createAccounts\(\{ backupDirs: backupLoginDirs\(process\.env, \{ primaryDir: PRIMARY_LOGIN_DIR \}\) \}\)/)
+  assert.match(server, /const PRIMARY_LOGIN_DIR = process\.env\.CLAUDE_CONFIG_DIR \|\| join\(homedir\(\), '\.claude'\)/)
+  // Labels only in the log.
+  assert.match(server, /console\.log\(`\[jarvis\] claude logins: \$\{ACCOUNTS\.labels\(\)\.join\(', '\)\}`\)/)
 })
