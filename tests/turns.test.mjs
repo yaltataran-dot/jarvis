@@ -301,10 +301,12 @@ test('a closed connection aborts the fallback and takes no more questions', asyn
  */
 function loginRig({
   backup = true,
+  /** Backup directories as a list (three logins); `backup` is ignored when given. */
+  backups = null,
   fallback = null,
   // Shared between rigs, as one bridge's logins are shared by all its pages.
   clock = { now: Date.UTC(2026, 9, 17, 15, 20) },
-  accounts = createAccounts({ backupDir: backup ? '/root/.claude-backup' : null }),
+  accounts = createAccounts(backups ? { backupDirs: backups } : { backupDir: backup ? '/root/.claude-backup' : null }),
 } = {}) {
   const s = { account: accounts.pick(clock.now) ?? 'primary', switches: [] }
   const sent = []
@@ -327,11 +329,12 @@ function loginRig({
         const to = accounts.pick(clock.now)
         if (to && to !== s.account) move(to, 'boundary')
       },
-      switchAccount() {
-        const to = accounts.pick(clock.now)
+      account: () => s.account,
+      switchAccount(tried) {
+        const to = accounts.pick(clock.now, tried)
         if (!to || to === s.account) return false
         move(to, 'limited')
-        return true
+        return to
       },
       pausedFrame() {
         const b = accounts.blocked(clock.now)
@@ -340,6 +343,8 @@ function loginRig({
     },
     fallback,
     log: (event, turn) => logs.push(`${event}:${turn?.id}`),
+    // One more try per other login.
+    maxSwitches: accounts.labels().length - 1,
     timers,
   })
   /** What server.mjs does on a 429 before it reports the result. */
@@ -599,4 +604,134 @@ test('logins: a newer question while one is on the backup — the old one is sto
   r.turns.primaryEnded(OK('поздно'))
   assert.deepEqual(r.handed, ['a1@primary', 'a1@backup', 'a2@backup'])
   assert.equal(r.sent.some((f) => f.ask === 'a1'), false)
+})
+
+const THREE = ['/root/.claude-b', '/root/.claude-c']
+
+test('three logins: the primary limited — answered on the backup, and the third login is not touched', () => {
+  const r = loginRig({ backups: THREE })
+  r.turns.ask('a1', item('погода'))
+  r.limited(r.clock.now + HOUR, '16:20')
+  r.turns.frame({ type: 'text', delta: 'Солнечно.' })
+  r.turns.primaryEnded(OK('Солнечно.'))
+  assert.deepEqual(r.handed, ['a1@primary', 'a1@backup'])
+  assert.deepEqual(r.s.switches, ['primary->backup (limited)'])
+  assert.deepEqual(r.sent.map((f) => f.type), ['text', 'done'])
+})
+
+test('three logins: the primary and the backup limited — answered on backup2, with no limit shown', () => {
+  const r = loginRig({ backups: THREE })
+  r.turns.ask('a1', item('новости'))
+  r.limited(r.clock.now + 2 * HOUR, '17:20')
+  r.limited(r.clock.now + HOUR, '16:20')
+  assert.deepEqual(r.handed, ['a1@primary', 'a1@backup', 'a1@backup2'])
+  assert.deepEqual(r.s.switches, ['primary->backup (limited)', 'backup->backup2 (limited)'])
+  assert.deepEqual(r.logs, ['account-switch:a1', 'account-switch:a1'])
+  assert.deepEqual(r.sent, [])
+  r.turns.frame({ type: 'text', delta: 'Вот.' })
+  r.turns.primaryEnded(OK('Вот.'))
+  assert.deepEqual(r.sent.map((f) => f.type), ['text', 'done'])
+  // The next question stays on backup2 while the other two are held off.
+  r.turns.ask('a2', item('ещё'))
+  assert.equal(r.handed.at(-1), 'a2@backup2')
+})
+
+test('three logins: all three limited — two retries, then one limit frame with the soonest time, and nothing more sent', () => {
+  const r = loginRig({ backups: THREE })
+  r.turns.ask('a1', item('новости'))
+  r.limited(r.clock.now + 3 * HOUR, '18:20')
+  r.limited(r.clock.now + 2 * HOUR, '17:20')
+  // The last one is the soonest, as server.mjs would report it (the rig passes its time on as given).
+  r.limited(r.clock.now + HOUR, '16:20')
+  assert.deepEqual(r.handed, ['a1@primary', 'a1@backup', 'a1@backup2'])
+  assert.deepEqual(r.sent, [{ type: 'error', kind: 'rate', resetAt: '16:20', message: 'limit:16:20', ask: 'a1' }])
+  r.turns.ask('a2', item('ещё раз'))
+  assert.equal(r.handed.length, 3)
+  assert.equal(r.sent.at(-1).ask, 'a2')
+})
+
+test('three logins: all three limited with a fallback — the fallback takes it after the third, not before', () => {
+  const fb = fakeFallback()
+  const r = loginRig({ backups: THREE, fallback: fb })
+  r.turns.ask('a1', item('2+2'))
+  r.limited(r.clock.now + HOUR, '16:20')
+  r.limited(r.clock.now + HOUR, '16:20')
+  assert.equal(fb.calls.length, 0)
+  r.limited(r.clock.now + HOUR, '16:20')
+  assert.equal(fb.calls.length, 1)
+  assert.deepEqual(r.handed, ['a1@primary', 'a1@backup', 'a1@backup2'])
+})
+
+test('three logins: a tool called on the backup — never asked on backup2', () => {
+  const r = loginRig({ backups: THREE })
+  r.turns.ask('a1', item('включи музыку'))
+  r.limited(r.clock.now + HOUR, '16:20')
+  assert.equal(r.handed.at(-1), 'a1@backup')
+  r.turns.acted()
+  r.limited(r.clock.now + HOUR, '16:20')
+  assert.deepEqual(r.handed, ['a1@primary', 'a1@backup'])
+  assert.deepEqual(r.sent, [{ type: 'error', kind: 'rate', resetAt: '16:20', message: 'mid-turn', ask: 'a1' }])
+})
+
+test('three logins: an answer begun on the backup — never asked on backup2', () => {
+  const fb = fakeFallback()
+  const r = loginRig({ backups: THREE, fallback: fb })
+  r.turns.ask('a1', item('расскажи'))
+  r.limited(r.clock.now + HOUR, '16:20')
+  r.turns.frame({ type: 'text', delta: 'Итак,' })
+  r.limited(r.clock.now + HOUR, '16:20')
+  assert.deepEqual(r.handed, ['a1@primary', 'a1@backup'])
+  assert.equal(fb.calls.length, 0)
+  assert.equal(r.sent.at(-1).kind, 'rate')
+})
+
+test('three logins: a login is never tried twice in one question, even when its time has passed meanwhile', () => {
+  const r = loginRig({ backups: THREE })
+  r.turns.ask('a1', item('один'))
+  // The primary gave no time: held for a minute only.
+  r.limited(r.clock.now + 60_000, null)
+  r.clock.now += 2 * 60_000
+  // The backup's 429 comes after the primary is free again: the question goes on, not back.
+  r.limited(r.clock.now + HOUR, '17:20')
+  assert.deepEqual(r.handed, ['a1@primary', 'a1@backup', 'a1@backup2'])
+  // And with backup2 out as well, the primary is still not asked a second time.
+  const q = loginRig({ backups: THREE })
+  q.accounts.hold('backup2', q.clock.now + HOUR, '16:20')
+  q.turns.ask('b1', item('два'))
+  q.limited(q.clock.now + 60_000, null)
+  q.clock.now += 2 * 60_000
+  q.limited(q.clock.now + HOUR, '17:20')
+  assert.deepEqual(q.handed, ['b1@primary', 'b1@backup'])
+  assert.equal(q.sent.at(-1).kind, 'rate')
+})
+
+test('three logins: without maxSwitches (the wiring as it was) a question still moves only once', () => {
+  const accounts = createAccounts({ backupDirs: THREE })
+  let on = 'primary'
+  const handed = []
+  const sent = []
+  const turns = createTurns({
+    send: (f) => sent.push(f),
+    say: { fallbackDown: (k) => k, limitMidTurn: () => 'mid' },
+    primary: {
+      hand: (t) => handed.push(`${t.id}@${on}`),
+      interrupt: () => {},
+      restart: () => {},
+      pausedFrame: () => null,
+      switchAccount() {
+        const to = accounts.pick()
+        if (!to || to === on) return false
+        on = to
+        return true
+      },
+    },
+    timers: manualTimers(),
+  })
+  turns.ask('a1', item('x'))
+  accounts.hold('primary', Date.now() + HOUR)
+  turns.primaryEnded(RATE)
+  accounts.hold('backup', Date.now() + HOUR)
+  turns.primaryEnded(RATE)
+  assert.deepEqual(handed, ['a1@primary', 'a1@backup'])
+  assert.deepEqual(sent, [{ ...RATE.frame, ask: 'a1' }])
 })

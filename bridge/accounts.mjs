@@ -1,9 +1,10 @@
 /**
  * Which Claude login the agent session runs on: `primary`, the one Claude Code
- * uses by default, and optionally `backup`, a second login kept in its own
- * config directory (JARVIS_CLAUDE_BACKUP_DIR, read by Claude Code as
- * CLAUDE_CONFIG_DIR). Each has its own credentials and its own transcripts, so
- * the two never share a token, and a session on one cannot resume the other's.
+ * uses by default, and optionally backups, each kept in its own config
+ * directory (JARVIS_CLAUDE_BACKUP_DIR, read by Claude Code as
+ * CLAUDE_CONFIG_DIR) and labelled `backup`, `backup2`, … in the order given.
+ * Each has its own credentials and its own transcripts, so no two share a
+ * token, and a session on one cannot resume another's.
  *
  * The state is per account and bridge-wide, because a usage limit belongs to
  * the account rather than to one page: when one is limited until a time, no
@@ -19,11 +20,14 @@
 
 /**
  * @param {object} [o]
- * @param {string | null} [o.backupDir]  The backup login's config directory, or none.
+ * @param {string[]} [o.backupDirs]  The backup logins' config directories, in the order they are preferred.
+ * @param {string | null} [o.backupDir]  A single backup directory, as before; ignored when backupDirs is given.
  */
-export function createAccounts({ backupDir = null } = {}) {
+export function createAccounts({ backupDirs, backupDir = null } = {}) {
   const list = [{ label: 'primary', dir: null }]
-  if (backupDir) list.push({ label: 'backup', dir: backupDir })
+  for (const dir of (backupDirs ?? [backupDir]).filter(Boolean)) {
+    list.push({ label: list.length === 1 ? 'backup' : `backup${list.length}`, dir })
+  }
   /** label -> { until, clock, reason } while held off. */
   const held = new Map()
 
@@ -61,21 +65,28 @@ export function createAccounts({ backupDir = null } = {}) {
     /** Is `label` held off at `now`? */
     held: (label, now = Date.now()) => Boolean(heldAt(label, now)),
 
-    /** The account a new session should open on: the first not held off, else null. */
-    pick(now = Date.now()) {
-      return list.find((a) => !heldAt(a.label, now))?.label ?? null
+    /**
+     * The account a new session should open on: the first not held off, else
+     * null. `except` leaves out the logins a question has already been tried on.
+     */
+    pick(now = Date.now(), except = []) {
+      return list.find((a) => !heldAt(a.label, now) && !except.includes(a.label))?.label ?? null
     },
 
     /**
      * When every account is held off: when the soonest one is back, and its
      * clock. Null clock when that one gave none — a later account's time would
      * tell the user to wait longer than they must. Null while any is free.
+     *
+     * `limited` is true only when every one of them is held off for its usage
+     * limit. A login set aside because it refused itself or would not start
+     * ('down') has not reached a limit, and the user is not to be told it has.
      */
     blocked(now = Date.now()) {
       const hs = list.map((a) => heldAt(a.label, now))
       if (hs.some((h) => !h)) return null
       const soonest = hs.reduce((a, b) => (b.until < a.until ? b : a))
-      return { until: soonest.until, clock: soonest.clock }
+      return { until: soonest.until, clock: soonest.clock, limited: hs.every((h) => h.reason === 'rate') }
     },
   }
 }

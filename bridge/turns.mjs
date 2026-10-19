@@ -27,11 +27,12 @@
  * anywhere, since some of it may already have happened; the fallback itself
  * has no tools at all.
  *
- * The usage limit, when there is a second Claude login (accounts.mjs): before
- * that, the same question goes once to a new session on the other login — on
- * the same terms, only if the turn had neither called a tool nor said a word,
- * and at most once per turn, so two limited logins cannot pass a question back
- * and forth. Which login a turn starts on is settled before it is handed over,
+ * The usage limit, when there are other Claude logins (accounts.mjs): before
+ * that, the same question goes to a new session on another login — on the same
+ * terms, only if the turn had neither called a tool nor said a word. At most
+ * `maxSwitches` times per turn (one per other login), and never to a login the
+ * turn has already been on, so limited logins cannot pass a question back and
+ * forth. Which login a turn starts on is settled before it is handed over,
  * never in the middle of one.
  *
  * Kept free of imports so the tests can drive it with fakes.
@@ -45,12 +46,14 @@
  *   restart(): void,
  *   pausedFrame(): object | null,
  *   atBoundary?(): void,
- *   switchAccount?(): boolean,
+ *   account?(): string,
+ *   switchAccount?(tried: string[]): string | boolean,
  * }} o.primary  The agent session. `pausedFrame` is the limit's error frame
  *   while the model is held off (every login limited, in server.mjs),
  *   otherwise null. `atBoundary`, between turns, moves the session to the
- *   login a new turn should run on. `switchAccount`, after a limit, moves it
- *   to another login that is free and says whether it did.
+ *   login a new turn should run on; `account` names the login it is on.
+ *   `switchAccount`, after a limit, moves it to another login that is free
+ *   and not among `tried`, and says which (or just whether it did).
  * @param {null | {
  *   ready(): { ok: boolean, kind?: string },
  *   answer(a: { item, history, signal: AbortSignal, onText(d: string): void }): Promise<{ text: string, costUsd?: number }>,
@@ -59,6 +62,7 @@
  * @param {{ fallbackDown(kind: string): string, limitMidTurn(): string }} o.say
  * @param {(event: string, turn?: object, detail?: string) => void} [o.log]
  * @param {number} [o.waitCapMs]  How long a stopped turn may take to finish.
+ * @param {number} [o.maxSwitches]  How many other logins one question may be asked on.
  */
 export function createTurns({
   primary,
@@ -67,6 +71,7 @@ export function createTurns({
   say,
   log = () => {},
   waitCapMs = 30_000,
+  maxSwitches = 1,
   historyMax = 6,
   timers = globalThis,
 }) {
@@ -108,13 +113,17 @@ export function createTurns({
       reinterrupted: false,
       acted: false,
       spoke: false,
-      switched: false,
+      switches: 0,
+      /** The logins this question has been asked on, by label, when they are known. */
+      tried: [],
       abort: null,
       watchdog: 0,
     }
     current = turn
     // Between turns: the login this one should run on.
     primary.atBoundary?.()
+    const on = primary.account?.()
+    if (on) turn.tried.push(on)
     // The limit is known to be reached: no request against it.
     const paused = primary.pausedFrame()
     if (paused) {
@@ -269,11 +278,15 @@ export function createTurns({
         tag(turn, { ...outcome.frame, message: say.limitMidTurn() })
         return finish(turn)
       }
-      // The other login, once: nothing of this turn happened, so it can be asked again.
-      if (outcome.kind === 'rate' && !turn.spoke && !turn.switched && primary.switchAccount?.()) {
-        turn.switched = true
-        log('account-switch', turn)
-        return void primary.hand(turn)
+      // Another login, one not yet tried: nothing of this turn happened, so it can be asked again.
+      if (outcome.kind === 'rate' && !turn.spoke && turn.switches < maxSwitches) {
+        const to = primary.switchAccount?.(turn.tried)
+        if (to) {
+          turn.switches++
+          if (typeof to === 'string') turn.tried.push(to)
+          log('account-switch', turn)
+          return void primary.hand(turn)
+        }
       }
       if (outcome.kind === 'rate' && fallback && !turn.spoke) return void runFallback(turn, outcome.frame)
       tag(turn, outcome.frame)
