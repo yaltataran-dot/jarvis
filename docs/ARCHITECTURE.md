@@ -76,6 +76,7 @@ are the largest remaining extraction (see the plan).
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`, and the SDK's last gate `canUseTool` deciding with it; built once from the writes switch) |
+| socket state | `socketState.mjs` (one agent socket's state — its session and generation, the session id, the login, the inbox, the turn in flight, what has been asked and told — as one object per connection, `createSocketState`, started as the handler's own variables were; tests in `tests/socketState.test.mjs`) |
 | session servers | `sessionServers.mjs` (the MCP servers one connection's session is given: Claude Code's own, then the HUD, interface, Chrome, camera, computer, music and calendar servers; built per session by `server.mjs` with its send, the turn queue's `live` and the question's `mayShow`; tests in `tests/sessionServers.test.mjs`) |
 | session inbox | `inbox.mjs` (one agent session's questions: `put`, `next`, `wait`, `close`; one per session, closed before it is replaced, read by the input generator as `next() ?? await wait()`; tests in `tests/inbox.test.mjs`) |
 | latency | `latency.mjs` (a turn's `[latency]` line: `latNew(id)`, `latencyLine(lat, outcome, end)`, `ms`; the record itself stays in `server.mjs`, where the stream, the hand-over and the turn queue write to it; tests in `tests/latency.test.mjs`) |
@@ -209,7 +210,7 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
   `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`,
   `bridge/http/file.mjs`, `bridge/http/proxy.mjs`, `bridge/http/page.mjs`,
-  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`, `bridge/inbox.mjs`, `bridge/sessionServers.mjs`. `server.mjs` imports the last twenty at start-up; without them it does not start.
+  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`, `bridge/inbox.mjs`, `bridge/sessionServers.mjs`, `bridge/socketState.mjs`. `server.mjs` imports the last twenty-one at start-up; without them it does not start.
   This list is not yet checked against the server: the local copy of production
   from 2026-10-17 also lacks `bridge/accounts.mjs`, `fallback.mjs`,
   `resumable.mjs`, `secrets.mjs` and `turns.mjs`, which `server.mjs` imports too.

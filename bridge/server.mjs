@@ -55,6 +55,7 @@ import { createToolBadge } from './toolBadge.mjs'
 import { latNew, latencyLine, ms } from './latency.mjs'
 import { ACCOUNT_DOWN_MS, createTurnOutcome } from './turnResult.mjs'
 import { createInbox } from './inbox.mjs'
+import { createSocketState } from './socketState.mjs'
 import { sessionServers } from './sessionServers.mjs'
 import { backupLoginDirs, configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from './settings.mjs'
 
@@ -569,31 +570,24 @@ wss.on('connection', (socket, req) => {
     JSON.stringify({ type: 'ready', servers: Object.keys(MCP_SERVERS) }),
   )
 
-  let closed = false
-  /** The questions for the agent session now running, one inbox per session (inbox.mjs). */
-  let chan = createInbox()
-
-  /** The effort the session is on now, so it is only changed when it differs. */
-  let sessionEffort = EFFORT
-
-  /** Whether this turn's question asked to see something — see visual.mjs. */
-  let turnMayShow = false
-
   /**
-   * Which of the page's asides this session has been handed, by id. Per
-   * connection, because the socket is the session: a reconnect is a session
-   * that has heard none of them, and gets them all.
+   * This connection's state: its session, the turn in flight and what the
+   * page has been told — one object per socket, read and written by every
+   * part of the handler below (socketState.mjs).
    */
-  let asideLedger = createAsideLedger()
+  const s = createSocketState({ effort: EFFORT, account: ACCOUNTS.pick() ?? 'primary' })
+
+
+
 
   /** Set this turn's effort before the question goes in. Never fatal. */
   const tuneFor = async (text) => {
     if (!ROUTE_EFFORT) return
     const want = effortFor(text)
-    if (want === sessionEffort) return
+    if (want === s.sessionEffort) return
     try {
-      await session.applyFlagSettings({ effortLevel: want })
-      sessionEffort = want
+      await s.session.applyFlagSettings({ effortLevel: want })
+      s.sessionEffort = want
       if (TRACE) console.log(`[jarvis] effort ${want}`)
     } catch (err) {
       console.warn(`[jarvis] could not set effort ${want}: ${err?.message ?? err}`)
@@ -614,9 +608,9 @@ wss.on('connection', (socket, req) => {
         : "\n\n(System note, not to be spoken: the user's browser is unavailable right now — do not call chrome_*; use WebSearch for facts.)"
 
   async function* userMessages(ch) {
-    while (!closed && !ch.closed) {
+    while (!s.closed && !ch.closed) {
       const item = ch.next() ?? (await ch.wait())
-      if (closed || ch.closed || item == null) return
+      if (s.closed || ch.closed || item == null) return
       // The question, and what the page answered by itself before it (aside.ts
       // in the page). Effort is sorted on the question alone: the note is long
       // and says nothing about how hard this one is.
@@ -626,7 +620,7 @@ wss.on('connection', (socket, req) => {
       // and the page sends them again with the next question; the session
       // already has them, so they are not said twice. New exchanges have new
       // ids and always go in.
-      const fresh = asideLedger.fresh(item.asides ?? [])
+      const fresh = s.asideLedger.fresh(item.asides ?? [])
       if (item.asides?.length && fresh.length < item.asides.length) {
         console.log(`[jarvis] asides: ${fresh.length} new, ${item.asides.length - fresh.length} already in the session`)
       }
@@ -638,19 +632,19 @@ wss.on('connection', (socket, req) => {
         `[knowledge] claude_fallback notes=${kn.notes.length} search=${kn.ms}ms${KNOWLEDGE.kb ? '' : ' (no knowledge base)'}${kn.error ? ` error="${kn.error}"` : ''}`,
       )
       const context = [fresh.length ? formatAsides(fresh, LANG) : null, formatNotes(kn.notes, LANG)].filter(Boolean).join('\n\n') || null
-      turnMayShow = asksToSee(text)
+      s.turnMayShow = asksToSee(text)
       await tuneFor(text)
       const note = await browserNote()
-      if (lat) {
-        lat.effort = sessionEffort
-        lat.sent = performance.now()
+      if (s.lat) {
+        s.lat.effort = s.sessionEffort
+        s.lat.sent = performance.now()
       }
       // Tells the page how this question was sorted, so it can say a word at
       // once when a long wait is likely (App.tsx) instead of seconds later.
-      sendTurn({ type: 'effort', level: ROUTE_EFFORT ? effortFor(text) : sessionEffort })
+      sendTurn({ type: 'effort', level: ROUTE_EFFORT ? effortFor(text) : s.sessionEffort })
       // Recorded at the hand-over and not before: a question superseded in the
       // queue never gets here, so its asides are still fresh for the next one.
-      asideLedger.delivered(fresh)
+      s.asideLedger.delivered(fresh)
       yield {
         type: 'user',
         message: { role: 'user', content: withAside(text, context) + note },
@@ -694,27 +688,13 @@ wss.on('connection', (socket, req) => {
    */
   const TURN_WAIT_CAP_MS = 30_000
 
-  /**
-   * The turn in flight, for the log: when it went in, the tools it called, and
-   * any API error reported on an assistant message. The summary line written
-   * when it ends is what tells a lost answer apart from a slow one.
-   */
-  let turnStartedAt = 0
-  let turnTools = []
-  let turnApiError = null
-  const turnSeconds = () => (turnStartedAt ? ((Date.now() - turnStartedAt) / 1000).toFixed(1) : '?')
+  const turnSeconds = () => (s.turnStartedAt ? ((Date.now() - s.turnStartedAt) / 1000).toFixed(1) : '?')
 
-  /**
-   * Where the turn in flight's time went: its record, written by the stream,
-   * the hand-over and the turn queue, and reported once as a `[latency]` line
-   * (latency.mjs).
-   */
-  let lat = null
   const latReport = (outcome) => {
-    if (!lat) return
+    if (!s.lat) return
     const end = performance.now()
-    console.log(latencyLine(lat, outcome, end))
-    lat = null
+    console.log(latencyLine(s.lat, outcome, end))
+    s.lat = null
   }
 
   /**
@@ -724,24 +704,14 @@ wss.on('connection', (socket, req) => {
   const { announceTool, settleTool, clear: clearTools } = createToolBadge({
     decideTool,
     show: (name) => sendTurn({ type: 'tool', name }),
-    called: (name) => turnTools.push(name),
+    called: (name) => s.turnTools.push(name),
   })
 
-  /** The agent session; replaced, with its history resumed, when a turn sticks. */
-  let session = null
-  /** Which session's stream is the live one; frames from an older one are dropped. */
-  let sessionGen = 0
-  /** From the init message, so a replacement session keeps the conversation. */
-  let sessionId = null
   /** This connection, as resumable.mjs knows it: ended if another socket resumes its session. */
   const owner = { close: () => socket.close(4002, 'resumed elsewhere') }
-  /** A question has been asked here: from then on this socket's session is its own, not to be swapped. */
-  let asked = false
-  /** The login this connection's session runs on — see accounts.mjs. */
-  let account = ACCOUNTS.pick() ?? 'primary'
 
   const openSession = (resume) => query({
-    prompt: userMessages(chan),
+    prompt: userMessages(s.chan),
     options: {
       ...(resume ? { resume } : {}),
       // Everything Claude Code has configured, plus the bridge's own servers on
@@ -751,7 +721,7 @@ wss.on('connection', (socket, req) => {
         send,
         // Drawn only for a turn still wanted; a panel only when this question asked to see.
         live: () => turns.live(),
-        mayShow: () => turnMayShow,
+        mayShow: () => s.turnMayShow,
         ask,
         allowWrites: ALLOW_WRITES,
         pcRoots: PC_ROOTS,
@@ -796,7 +766,7 @@ wss.on('connection', (socket, req) => {
       // in the 20 s it took to answer "what's the weather". This set of tools
       // is small enough that deferring them saves nothing.
       // The backup login adds only its own config directory.
-      env: ACCOUNTS.env(account, { ...AGENT_ENV, ENABLE_TOOL_SEARCH: 'false' }),
+      env: ACCOUNTS.env(s.account, { ...AGENT_ENV, ENABLE_TOOL_SEARCH: 'false' }),
       maxTurns: 24,
       permissionMode: 'default',
       // Without this the SDK only emits whole assistant messages, and JARVIS
@@ -810,17 +780,17 @@ wss.on('connection', (socket, req) => {
 
   /** A new agent session, live from now on, resuming `resume` when given. */
   const startSession = (resume = null) => {
-    const gen = ++sessionGen
-    const s = openSession(resume)
-    session = s
+    const gen = ++s.sessionGen
+    const q = openSession(resume)
+    s.session = q
     // Bring the agent up now, while the page is still on its start-up screen,
     // rather than on the first question. Measured on a fresh connection: the
     // first question spent 1.1 s waiting for the session to start before it
     // could even be handed over. The initialize handshake is what it waited for.
     const t0 = performance.now()
-    const on = account
+    const on = s.account
     const label = ACCOUNTS.switchable() ? ` (${on})` : ''
-    void Promise.resolve(s.initializationResult?.())
+    void Promise.resolve(q.initializationResult?.())
       .then(() => console.log(`[jarvis] agent session ready in ${Math.round(performance.now() - t0)} ms${label}`))
       .catch((err) => {
         console.warn(`[jarvis] agent session warm-up failed${label}: ${err?.message ?? err}`)
@@ -829,12 +799,12 @@ wss.on('connection', (socket, req) => {
         // A session closed under it (a switch, a page gone) is not its fault.
         // Not for a resumed session: a transcript that would not load is the
         // conversation's fault, not the login's (the resume handler falls back).
-        if (ACCOUNTS.switchable() && gen === sessionGen && !closed && !resume) {
+        if (ACCOUNTS.switchable() && gen === s.sessionGen && !s.closed && !resume) {
           ACCOUNTS.hold(on, Date.now() + ACCOUNT_DOWN_MS, null, 'down')
           console.warn(`[jarvis] login ${on} set aside for ${ACCOUNT_DOWN_MS / 60_000} min`)
         }
       })
-    void pump(s, gen)
+    void pump(q, gen)
   }
 
   /**
@@ -844,29 +814,29 @@ wss.on('connection', (socket, req) => {
    * Only ever called between turns, or after a turn's result.
    */
   const switchTo = (to, why) => {
-    console.log(`[jarvis] claude login ${account} -> ${to} (${why})`)
-    const old = session
-    chan.close()
-    chan = createInbox()
-    sessionGen++
+    console.log(`[jarvis] claude login ${s.account} -> ${to} (${why})`)
+    const old = s.session
+    s.chan.close()
+    s.chan = createInbox()
+    s.sessionGen++
     try {
       old?.close?.()
     } catch {
       // Already gone.
     }
-    account = to
-    sessionId = null
-    sessionEffort = EFFORT
-    asideLedger = createAsideLedger()
+    s.account = to
+    s.sessionId = null
+    s.sessionEffort = EFFORT
+    s.asideLedger = createAsideLedger()
     startSession(null)
   }
 
   // Pump a session's output stream to the browser for as long as it is the live one.
-  async function pump(s, gen) {
+  async function pump(q, gen) {
     try {
-      for await (const msg of s) {
+      for await (const msg of q) {
         // A replaced session's stream: none of it is for the page any more.
-        if (gen !== sessionGen) break
+        if (gen !== s.sessionGen) break
         if (process.env.JARVIS_DEBUG === '1') {
           console.log('[msg]', msg.type, msg.event?.type ?? '')
         }
@@ -882,13 +852,13 @@ wss.on('connection', (socket, req) => {
             // time the interrupt lands — see turns.mjs.
             turns.streaming()
             const ev = msg.event
-            if (lat && !lat.first) lat.first = performance.now()
+            if (s.lat && !s.lat.first) s.lat.first = performance.now()
             if (
               ev?.type === 'content_block_delta' &&
               ev.delta?.type === 'text_delta' &&
               ev.delta.text
             ) {
-              if (lat && !lat.text) lat.text = performance.now()
+              if (s.lat && !s.lat.text) s.lat.text = performance.now()
               sendTurn({ type: 'text', delta: ev.delta.text })
             }
             // A text block that ends before a tool: its last sentence goes now,
@@ -899,9 +869,9 @@ wss.on('connection', (socket, req) => {
               ev?.type === 'content_block_start' &&
               ev.content_block?.type === 'tool_use'
             ) {
-              if (lat && ev.content_block.id && !lat.tools.has(ev.content_block.id)) {
-                lat.tools.set(ev.content_block.id, performance.now())
-                lat.toolCount++
+              if (s.lat && ev.content_block.id && !s.lat.tools.has(ev.content_block.id)) {
+                s.lat.tools.set(ev.content_block.id, performance.now())
+                s.lat.toolCount++
               }
               // From here the turn may have changed something, so it is not
               // handed to the fallback if the limit cuts it off.
@@ -915,7 +885,7 @@ wss.on('connection', (socket, req) => {
             // An API failure can arrive as an assistant message carrying an
             // error kind instead of an answer — remembered for the result.
             if (msg.error) {
-              turnApiError = msg.error
+              s.turnApiError = msg.error
               console.warn(`[jarvis] API error on the turn: ${msg.error}`)
             }
             // Fallback for builds that emit whole assistant messages rather
@@ -937,10 +907,10 @@ wss.on('connection', (socket, req) => {
             if (!Array.isArray(blocks)) break
             for (const block of blocks) {
               if (block?.type === 'tool_result') {
-                const began = lat?.tools.get(block.tool_use_id)
+                const began = s.lat?.tools.get(block.tool_use_id)
                 if (began) {
-                  lat.toolMs += performance.now() - began
-                  lat.tools.delete(block.tool_use_id)
+                  s.lat.toolMs += performance.now() - began
+                  s.lat.tools.delete(block.tool_use_id)
                 }
                 settleTool(block.tool_use_id, block.is_error === true)
               }
@@ -953,18 +923,18 @@ wss.on('connection', (socket, req) => {
             // turn when turns.mjs says so; its frame is handed to turns.mjs.
             const turnInterrupted = turns.interrupted()
             const outcome = turnOutcome(msg, {
-              apiError: turnApiError,
+              apiError: s.turnApiError,
               interrupted: turnInterrupted,
-              account,
+              account: s.account,
               seconds: turnSeconds,
-              tools: turnTools,
+              tools: s.turnTools,
             })
             latReport(
-              !turnFailed(msg, turnApiError) ? 'ok' : turnInterrupted ? 'interrupted' : `failed:${msg.subtype}`,
+              !turnFailed(msg, s.turnApiError) ? 'ok' : turnInterrupted ? 'interrupted' : `failed:${msg.subtype}`,
             )
-            turnStartedAt = 0
-            turnTools = []
-            turnApiError = null
+            s.turnStartedAt = 0
+            s.turnTools = []
+            s.turnApiError = null
             // One turn's tool ids are never referred to again, and these
             // otherwise grow for as long as the socket is open.
             clearTools()
@@ -989,16 +959,16 @@ wss.on('connection', (socket, req) => {
             }
             if (msg.subtype === 'init') {
               if (typeof msg.session_id === 'string') {
-                sessionId = msg.session_id
+                s.sessionId = msg.session_id
                 // The page keeps this to ask for the conversation back after a drop.
-                RESUMABLE.issue(sessionId, account, owner)
-                send({ type: 'session', id: sessionId })
+                RESUMABLE.issue(s.sessionId, s.account, owner)
+                send({ type: 'session', id: s.sessionId })
               }
               // Servers report 'pending' until first use — they connect
               // lazily — so only drop the ones that are actually unusable.
               const usable = (msg.mcp_servers ?? [])
-                .filter((s) => s.status !== 'needs-auth' && s.status !== 'failed')
-                .map((s) => s.name)
+                .filter((q) => q.status !== 'needs-auth' && q.status !== 'failed')
+                .map((q) => q.name)
               send({ type: 'ready', servers: usable })
               console.log(`[jarvis] ${usable.length} MCP servers available`)
             }
@@ -1007,20 +977,20 @@ wss.on('connection', (socket, req) => {
       }
       // The live session's stream ended without a word: the same as a failure,
       // or the turn on the floor would wait on a result that cannot come.
-      if (gen === sessionGen && !closed) throw new Error('the agent session ended')
+      if (gen === s.sessionGen && !s.closed) throw new Error('the agent session ended')
     } catch (err) {
       // A replaced session dying is the expected end of it.
-      if (gen !== sessionGen) return
+      if (gen !== s.sessionGen) return
       console.error('[jarvis] session error:', err)
       send({ type: 'error', message: redactSecrets(String(err?.message ?? err)) })
       // The stream is finished either way — nothing will ever be read from it
       // again. Leaving the socket open would leave the client believing it has
       // a working bridge, and every later question would hang for ever waiting
       // on a pump that has already stopped. Close it so it reconnects.
-      closed = true
+      s.closed = true
       turns.close()
-      chan.close()
-      s.close?.()
+      s.chan.close()
+      q.close?.()
       socket.close()
     }
   }
@@ -1042,14 +1012,14 @@ wss.on('connection', (socket, req) => {
     primary: {
       hand(turn) {
         const { text, asides, lat: received } = turn.item
-        lat = received
-        lat.start = performance.now()
-        turnStartedAt = Date.now()
-        turnTools = []
-        turnApiError = null
-        chan.put({ text, asides })
+        s.lat = received
+        s.lat.start = performance.now()
+        s.turnStartedAt = Date.now()
+        s.turnTools = []
+        s.turnApiError = null
+        s.chan.put({ text, asides })
       },
-      interrupt: () => session?.interrupt?.(),
+      interrupt: () => s.session?.interrupt?.(),
       /**
        * The stopped turn never ended. Its session is closed and its stream
        * ignored from here on (sessionGen), and a new session picks the
@@ -1058,37 +1028,37 @@ wss.on('connection', (socket, req) => {
        */
       restart() {
         console.warn(`[jarvis] turn still running ${TURN_WAIT_CAP_MS / 1000} s after it was stopped — restarting the agent session`)
-        const old = session
-        chan.close()
-        chan = createInbox()
-        sessionGen++
+        const old = s.session
+        s.chan.close()
+        s.chan = createInbox()
+        s.sessionGen++
         try {
           old?.close?.()
         } catch {
           // Already gone.
         }
         latReport('stuck')
-        turnStartedAt = 0
-        turnTools = []
-        turnApiError = null
+        s.turnStartedAt = 0
+        s.turnTools = []
+        s.turnApiError = null
         clearTools()
-        sessionEffort = EFFORT
+        s.sessionEffort = EFFORT
         // A fresh session has heard none of the asides; a resumed one has.
-        if (!sessionId) asideLedger = createAsideLedger()
-        startSession(sessionId)
+        if (!s.sessionId) s.asideLedger = createAsideLedger()
+        startSession(s.sessionId)
       },
       // Between turns: the first login not held off — the primary again once its time is up.
       atBoundary() {
         const to = ACCOUNTS.pick()
-        if (to && to !== account) switchTo(to, ACCOUNTS.held(account) ? `${account} held off` : `${to} back`)
+        if (to && to !== s.account) switchTo(to, ACCOUNTS.held(s.account) ? `${s.account} held off` : `${to} back`)
       },
       // The login this connection's session is on, for the turn's list of logins tried.
-      account: () => account,
+      account: () => s.account,
       // After a limit: the next login that is free and this question has not been on.
       switchAccount(tried) {
         const to = ACCOUNTS.pick(Date.now(), tried)
-        if (!to || to === account) return false
-        switchTo(to, `${account} limited`)
+        if (!to || to === s.account) return false
+        switchTo(to, `${s.account} limited`)
         return to
       },
       // Every login held off — at its limit, or set aside — and none back yet: no request against them.
@@ -1119,7 +1089,7 @@ wss.on('connection', (socket, req) => {
         const recv = turn.item?.lat?.recv
         console.log(`[latency] ask=${id} superseded effort=- queue=${ms(recv, performance.now())}ms total=${ms(recv, performance.now())}ms`)
       } else if (event === 'account-switch') {
-        console.log(`[jarvis] ask ${id} asked again on login ${account}`)
+        console.log(`[jarvis] ask ${id} asked again on login ${s.account}`)
       } else if (event === 'fallback') {
         console.log(`[jarvis] ask ${id} → fallback channel (${FALLBACK?.model})`)
       } else if (event === 'fallback-skipped' || event === 'fallback-failed') {
@@ -1179,10 +1149,10 @@ wss.on('connection', (socket, req) => {
     // handed out, to this login, within its time (resumable.mjs). Otherwise
     // the fresh session stays and the page is told so — nothing is replayed.
     if (msg.type === 'resume') {
-      let verdict = asked ? { ok: false, reason: 'already-asking' } : RESUMABLE.check(msg.id, account)
+      let verdict = s.asked ? { ok: false, reason: 'already-asking' } : RESUMABLE.check(msg.id, s.account)
       // Claude Code resumes from the transcript on disk; without it there is nothing to resume.
       if (verdict.ok) {
-        const dir = ACCOUNTS.env(account, { ...AGENT_ENV }).CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+        const dir = ACCOUNTS.env(s.account, { ...AGENT_ENV }).CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
         if (!existsSync(transcriptPath(dir, homedir(), msg.id))) verdict = { ok: false, reason: 'no-transcript' }
       }
       if (!verdict.ok) {
@@ -1193,37 +1163,37 @@ wss.on('connection', (socket, req) => {
       // The old socket the server has not yet seen die: end it, so two sockets never share one session.
       if (verdict.holder && verdict.holder !== owner) verdict.holder.close()
       const replace = (resume) => {
-        const old = session
-        chan.close()
-        chan = createInbox()
-        sessionGen++
+        const old = s.session
+        s.chan.close()
+        s.chan = createInbox()
+        s.sessionGen++
         try {
           old?.close?.()
         } catch {
           // Already gone.
         }
-        sessionId = resume
-        sessionEffort = EFFORT
+        s.sessionId = resume
+        s.sessionEffort = EFFORT
         startSession(resume)
-        return sessionGen
+        return s.sessionGen
       }
       const wanted = msg.id
       const gen = replace(wanted)
-      RESUMABLE.issue(wanted, account, owner)
+      RESUMABLE.issue(wanted, s.account, owner)
       // Said only once the resumed session has actually started. If it will not
       // (a transcript that does not load), the page gets a fresh session and is
       // told so — unless a question has meanwhile gone into this one, which then
       // fails on its own and says why.
-      void Promise.resolve(session?.initializationResult?.()).then(
+      void Promise.resolve(s.session?.initializationResult?.()).then(
         () => {
-          if (closed || gen !== sessionGen) return
-          console.log(`[jarvis] conversation resumed after reconnect${ACCOUNTS.switchable() ? ` (${account})` : ''}`)
+          if (s.closed || gen !== s.sessionGen) return
+          console.log(`[jarvis] conversation resumed after reconnect${ACCOUNTS.switchable() ? ` (${s.account})` : ''}`)
           send({ type: 'resumed', ok: true })
         },
         (err) => {
-          if (closed || gen !== sessionGen) return
+          if (s.closed || gen !== s.sessionGen) return
           console.warn(`[jarvis] resume failed (${String(err?.message ?? err).slice(0, 80)}) — new conversation`)
-          if (!asked) replace(null)
+          if (!s.asked) replace(null)
           send({ type: 'resumed', ok: false })
         },
       )
@@ -1231,9 +1201,9 @@ wss.on('connection', (socket, req) => {
     }
 
     if (msg.type === 'ask' && typeof msg.text === 'string') {
-      asked = true
+      s.asked = true
       // Each question keeps the session resumable for another thirty minutes.
-      if (sessionId) RESUMABLE.issue(sessionId, account, owner)
+      if (s.sessionId) RESUMABLE.issue(s.sessionId, s.account, owner)
       // Waits for the floor in turns.mjs: the turn before it is stopped and
       // has to report its end first, or its last tokens land on this one.
       // Measured before that wait existed: ask "one", interrupt, ask "two",
@@ -1258,12 +1228,12 @@ wss.on('connection', (socket, req) => {
   // connection lost without a goodbye, 1000 a deliberate close.
   socket.on('close', (code) => {
     console.log(`[jarvis] client disconnected (code ${code})`)
-    closed = true
+    s.closed = true
     // The conversation stays resumable for a while: a phone whose screen went off comes back.
-    if (sessionId) RESUMABLE.release(sessionId, owner)
+    if (s.sessionId) RESUMABLE.release(s.sessionId, owner)
     // Aborts a fallback answer in flight: nobody is left to hear it.
     turns.close()
-    chan.close()
-    session?.close?.()
+    s.chan.close()
+    s.session?.close?.()
   })
 })

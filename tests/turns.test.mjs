@@ -765,10 +765,10 @@ test('the fallback could not answer: fallbackDown is given the very frame it wor
 test('server.mjs wires the logins as loginRig does: one try per other login, the login it is on, the next untried one', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(server, /^ {4}maxSwitches: ACCOUNTS\.labels\(\)\.length - 1,$/m)
-  assert.match(server, /^ {6}account: \(\) => account,$/m)
+  assert.match(server, /^ {6}account: \(\) => s\.account,$/m)
   assert.match(
     server,
-    /switchAccount\(tried\) \{\n {8}const to = ACCOUNTS\.pick\(Date\.now\(\), tried\)\n {8}if \(!to \|\| to === account\) return false\n {8}switchTo\(to, `\$\{account\} limited`\)\n {8}return to\n {6}\}/,
+    /switchAccount\(tried\) \{\n {8}const to = ACCOUNTS\.pick\(Date\.now\(\), tried\)\n {8}if \(!to \|\| to === s\.account\) return false\n {8}switchTo\(to, `\$\{s\.account\} limited`\)\n {8}return to\n {6}\}/,
   )
   // The logins come from JARVIS_CLAUDE_BACKUP_DIR through settings.mjs, the primary's own directory left out.
   assert.match(server, /const ACCOUNTS = createAccounts\(\{ backupDirs: backupLoginDirs\(process\.env, \{ primaryDir: PRIMARY_LOGIN_DIR \}\) \}\)/)

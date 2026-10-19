@@ -78,9 +78,12 @@ test('the socket closing ends the generator too', async () => {
 
 test('server.mjs: one inbox per session, closed before it is replaced, read as next ?? wait, handed with put', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
-  assert.match(server, /const item = ch\.next\(\) \?\? \(await ch\.wait\(\)\)\n {6}if \(closed \|\| ch\.closed \|\| item == null\) return/)
-  assert.equal(server.match(/chan\.close\(\)\n\s+chan = createInbox\(\)/g)?.length, 3, 'switch login, restart, resume')
-  assert.equal(server.match(/chan\.close\(\)/g)?.length, 5, 'and on a dead stream and a closed socket')
-  assert.equal(server.match(/chan\.put\(/g)?.length, 1, 'only primary.hand puts a question in')
+  // The inbox lives on the socket's state, `s` (socketState.mjs).
+  assert.match(server, /const item = ch\.next\(\) \?\? \(await ch\.wait\(\)\)\n {6}if \(s\.closed \|\| ch\.closed \|\| item == null\) return/)
+  assert.equal(server.match(/s\.chan\.close\(\)\n\s+s\.chan = createInbox\(\)/g)?.length, 3, 'switch login, restart, resume')
+  assert.equal(server.match(/s\.chan\.close\(\)/g)?.length, 5, 'and on a dead stream and a closed socket')
+  assert.equal(server.match(/s\.chan\.put\(/g)?.length, 1, 'only primary.hand puts a question in')
   assert.doesNotMatch(server, /chan\.(inbox|deliver)|chan\.closed = /)
+  const state = readFileSync(new URL('../bridge/socketState.mjs', import.meta.url), 'utf8')
+  assert.match(state, /chan: createInbox\(\),/, 'one inbox from the start, per connection')
 })

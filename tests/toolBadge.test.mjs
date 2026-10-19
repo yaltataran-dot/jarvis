@@ -101,7 +101,7 @@ test('server.mjs builds the frame, logs the names on the turn, and clears where 
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(
     server,
-    /const \{ announceTool, settleTool, clear: clearTools \} = createToolBadge\(\{\n {4}decideTool,\n {4}show: \(name\) => sendTurn\(\{ type: 'tool', name \}\),\n {4}called: \(name\) => turnTools\.push\(name\),\n {2}\}\)/,
+    /const \{ announceTool, settleTool, clear: clearTools \} = createToolBadge\(\{\n {4}decideTool,\n {4}show: \(name\) => sendTurn\(\{ type: 'tool', name \}\),\n {4}called: \(name\) => s\.turnTools\.push\(name\),\n {2}\}\)/,
   )
   assert.equal(server.match(/clearTools\(\)/g)?.length, 2, 'at a result and at a session restart')
   assert.doesNotMatch(server, /seenTools|heldTools/)
