@@ -67,6 +67,7 @@ import { createToolPolicy } from './policy.mjs'
 import { systemPromptFor } from './prompt.mjs'
 import { createAccess } from './access.mjs'
 import { createPageRequests } from './pageRequests.mjs'
+import { createToolBadge } from './toolBadge.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 // Loopback only by default. Bound to every interface, the agent socket and the
@@ -837,29 +838,6 @@ wss.on('connection', (socket, req) => {
    */
   const { ask, reply: replied } = createPageRequests({ socket, send })
 
-  /**
-   * Announcing a tool on the HUD, once, and only if it actually runs.
-   *
-   * A tool_use block surfaces twice — as a partial stream event and again on
-   * the completed assistant message — so ids are remembered. The harder part
-   * is timing, because a refused tool that lights the badge, plays the sound
-   * and provokes a "working on it" line, for work that never happens, reads as
-   * a bug on camera.
-   *
-   * The SDK's order is: the block starts streaming, then canUseTool is asked,
-   * then the tool runs. So nothing is known at content_block_start. Announcing
-   * from inside canUseTool would know the verdict but miss tools entirely —
-   * measured on this SDK, the callback is consulted only for calls the CLI
-   * hasn't already settled, so a `Bash: echo` its own classifier waves through
-   * never reaches us at all.
-   *
-   * So: announce immediately for anything decideTool permits, since those run.
-   * Hold the rest, and let the tool_result settle it — a refusal comes back as
-   * is_error, anything else really did execute and has earned its badge, a
-   * beat late. Nothing is ever announced for work that didn't happen.
-   */
-  const seenTools = new Set()
-  const heldTools = new Map()
   /** Closes each text block of an answer with a space — see turnText.mjs. */
   const blockJoin = createBlockJoin()
 
@@ -910,28 +888,15 @@ wss.on('connection', (socket, req) => {
     lat = null
   }
 
-  const announceTool = (id, name) => {
-    if (!name || (id && seenTools.has(id))) return
-    if (id) seenTools.add(id)
-    turnTools.push(name.replace(/^mcp__/, ''))
-    // The display tool isn't work being done, it's the HUD drawing itself —
-    // announcing it would put "jarvis · display" in the tool badge and trigger
-    // a "working on it" filler for something already on screen.
-    if (name === 'mcp__jarvis__display') return
-    // The ui_* tools are the same case one step further: retinting the
-    // interface is the interface talking about itself, not work being done for
-    // the user, and the badge would be describing the very thing they can see.
-    if (name.startsWith('mcp__jarvis_ui__')) return
-    if (decideTool(name)) return sendTurn({ type: 'tool', name })
-    if (id) heldTools.set(id, name)
-  }
-
-  const settleTool = (id, failed) => {
-    const name = heldTools.get(id)
-    if (name === undefined) return
-    heldTools.delete(id)
-    if (!failed) sendTurn({ type: 'tool', name })
-  }
+  /**
+   * Announcing a tool on the HUD, once, and only if it actually runs
+   * (toolBadge.mjs). The names also go on the turn's log line.
+   */
+  const { announceTool, settleTool, clear: clearTools } = createToolBadge({
+    decideTool,
+    show: (name) => sendTurn({ type: 'tool', name }),
+    called: (name) => turnTools.push(name),
+  })
 
   /** The agent session; replaced, with its history resumed, when a turn sticks. */
   let session = null
@@ -1300,8 +1265,7 @@ wss.on('connection', (socket, req) => {
             turnApiError = null
             // One turn's tool ids are never referred to again, and these
             // otherwise grow for as long as the socket is open.
-            seenTools.clear()
-            heldTools.clear()
+            clearTools()
             // Last, because it may hand the next question over at once, and
             // that turn's state is set fresh in primary.hand below. This is
             // the only place a primary turn is genuinely over.
@@ -1410,8 +1374,7 @@ wss.on('connection', (socket, req) => {
         turnStartedAt = 0
         turnTools = []
         turnApiError = null
-        seenTools.clear()
-        heldTools.clear()
+        clearTools()
         sessionEffort = EFFORT
         // A fresh session has heard none of the asides; a resumed one has.
         if (!sessionId) asideLedger = createAsideLedger()
