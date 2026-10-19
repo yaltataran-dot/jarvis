@@ -82,6 +82,18 @@ later step.
 
 ## Contracts (page ↔ bridge)
 
+In code: `shared/protocol.mjs` (frame names, error kinds, recognition messages,
+close codes; plain JavaScript, loaded by the bridge at run time and bundled by
+the page) with its types in `shared/protocol.d.mts`, and `shared/ui.ts` (panel
+and blade shapes, types only). `tests/protocol.test.ts` pins the values to
+what was on the wire and checks both sides' real code against them;
+`tests/uiContract.test.ts` does the same for panels and blades.
+
+The page's frame type (`BridgeFrame`) types `type` as the known names, so the
+compiler rejects a comparison with a misspelt one. The bridge's `server.mjs`
+keeps its literals (it has no unit tests and starts the server on import); the
+protocol test reads them from the source instead.
+
 ### Agent socket (`/`)
 
 Page → bridge: `ask {text, id, asides?}`, `interrupt`, `reply {id, …}` (camera
@@ -103,10 +115,12 @@ the bridge's resume window.
 
 Page → bridge: binary frames of 16 kHz mono PCM16. Bridge → page: JSON
 `{t:'ready'}`, `{t:'r', text, final, speech}`, `{t:'u'}`, `{t:'err'}`. Close
-codes from the bridge: `4000` session time limit, `4001` replaced (at most
-three sessions), `4408` idle. From the page (logged by the bridge): `4010`
-audio blocked, `4011` capture failed, `4012` worklet stalled, `4013` capture
-stalled.
+codes from the bridge: `1000` normal, `1009` frame or session audio too large,
+`1011` the page's socket errored, `4000` session time limit, `4001` replaced
+(at most three sessions), `4408` idle, `4502` Deepgram unreachable or failed,
+`4503` no usable Deepgram key. From the page (logged by the bridge as given,
+like any code in 4000–4099): `4010` audio blocked, `4011` capture failed,
+`4012` worklet stalled, `4013` capture stalled.
 
 ### HTTP
 
@@ -127,3 +141,22 @@ The bridge accepts sockets only from allowed origins and hosts; a client with
 no Origin is refused unless explicitly allowed. Writes (shell, files, devices)
 are off unless enabled, never as root; calendar writes have their own switch.
 Secrets stay on the bridge and are redacted from its logs.
+
+## Releasing
+
+A release set lists its files explicitly, so the shared layer has to be in it:
+
+- `shared/` is imported by the page (bundled at build) and by the bridge at run
+  time (`bridge/deepgramProxy.mjs` → `shared/protocol.mjs`). A release that
+  carries files importing it must carry `shared/` too; without it the bridge
+  does not start. The release check's import-resolution step catches a
+  missing file (every relative import must resolve inside the release or on
+  the server).
+- `shared/` is a new directory on the server. Installing new files must create
+  their directories (`install -D`); the current deploy scripts install new
+  files with `install -m 644`, which does not, and must be changed for the
+  first release that carries `shared/`.
+- A release that changes `bridge/` restarts the bridge; one that changes only
+  the page and `shared/` types does not need to.
+- Comments must not contain `from '<relative path>'`: the import-resolution
+  step reads it as an import.

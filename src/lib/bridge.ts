@@ -6,6 +6,7 @@ import { makeTurnLog } from './turnLog'
 import { createResumeClient } from './resume'
 import { createLink } from './redial'
 import { setTraceSink } from './trace'
+import type { BridgeFrame } from '../../shared/protocol.mjs'
 
 /** The page's own failure sentences, in the language he answers in. */
 const SAY =
@@ -72,36 +73,9 @@ if (TRACE && typeof window !== 'undefined') (window as unknown as { __turnlog?: 
 // Breadcrumbs from modules that do not import the transport (trace.ts) come here too.
 setTraceSink(trace)
 
-/** Anything the bridge sends. Deliberately loose — a frame from a future
- *  bridge build should be ignored, not crash the turn. */
-type Frame = {
-  type?: string
-  delta?: string
-  name?: string
-  text?: string
-  message?: string
-  panel?: Panel
-  blade?: Blade
-  op?: string
-  args?: unknown
-  id?: string
-  ask?: string
-  reason?: string
-  mode?: string
-  seconds?: number
-  when?: string
-  servers?: Array<string | { name?: string }>
-  attempt?: number
-  status?: number | null
-  level?: string
-  /** On an error: 'rate' for the usage limit, 'service' for another cause
-   *  outside JARVIS (network, VPN, the service); absent for a fault. */
-  kind?: string
-  /** On a usage-limit error: when it lifts, as wall-clock "22:50". */
-  resetAt?: string | null
-  /** On `resumed`: whether the bridge gave the conversation back. */
-  ok?: boolean
-}
+/** Anything the bridge sends (shared/protocol.d.mts). Deliberately loose — a
+ *  frame from a future bridge build should be ignored, not crash the turn. */
+type Frame = BridgeFrame
 
 /**
  * A turn that failed for a reason outside JARVIS — the usage limit, the

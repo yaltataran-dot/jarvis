@@ -12,7 +12,7 @@ export type Phase =
   | 'speaking'  // reading the answer back
 
 // The panel and blade shapes live with the protocol (shared/ui.ts); re-exported
-// so every existing `import { Panel } from '../store'` keeps working.
+// so every module that takes Panel or Blade from the store keeps working.
 export type { Blade, Panel }
 
 export type Turn = {

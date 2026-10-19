@@ -341,3 +341,22 @@ test('each session says in the log which start of the page it is, as one known w
   await new Promise((r) => (wss.close(), server.close(r)))
   await up.close()
 })
+
+test('a session past its time limit is ended with 4000, the code the page reads as "session limit"', async () => {
+  const up = await fakeUpstream()
+  const b = await bridge({ key: () => SECRET, url: up.url, maxSessionMs: 80, idleMs: 10_000 })
+  const { closed } = await b.open()
+  assert.equal(await closed, 4000)
+  await b.close()
+  await up.close()
+})
+
+test('an accepted session tells the page exactly {t: "ready"}, before anything else', async () => {
+  const up = await fakeUpstream()
+  const b = await bridge({ key: () => SECRET, url: up.url })
+  const { inbox } = await b.open()
+  await until(() => inbox.length > 0)
+  assert.deepEqual(inbox[0], { t: 'ready' })
+  await b.close()
+  await up.close()
+})

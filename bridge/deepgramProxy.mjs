@@ -1,4 +1,5 @@
 import WebSocket from 'ws'
+import { PAGE_CLOSE_RANGE, STT_CLOSE, STT_MESSAGES } from '../shared/protocol.mjs'
 
 /**
  * Streaming speech-to-text through Deepgram, with the API key kept here.
@@ -90,14 +91,14 @@ export function slim(raw) {
   if (m?.type === 'Results') {
     const text = m.channel?.alternatives?.[0]?.transcript
     return {
-      t: 'r',
+      t: STT_MESSAGES.RESULT,
       text: typeof text === 'string' ? text : '',
       final: m.is_final === true,
       speech: m.speech_final === true,
     }
   }
-  if (m?.type === 'UtteranceEnd') return { t: 'u' }
-  if (m?.type === 'Error') return { t: 'err' }
+  if (m?.type === 'UtteranceEnd') return { t: STT_MESSAGES.UTTERANCE_END }
+  if (m?.type === 'Error') return { t: STT_MESSAGES.ERROR }
   return null
 }
 
@@ -139,10 +140,10 @@ export function createSttProxy({
   function accept(client, why) {
     const apiKey = cleanKey(key())
     if (!apiKey) {
-      client.close(4503, 'no key')
+      client.close(STT_CLOSE.NO_KEY, 'no key')
       return
     }
-    while (sessions.length >= maxSessions) sessions[0].end(4001, 'replaced')
+    while (sessions.length >= maxSessions) sessions[0].end(STT_CLOSE.REPLACED, 'replaced')
 
     let upstream = null
     let ready = false
@@ -189,10 +190,10 @@ export function createSttProxy({
 
     const touch = () => {
       if (idle) clearTimeout(idle)
-      idle = setTimeout(() => session.end(4408, 'idle'), idleMs)
+      idle = setTimeout(() => session.end(STT_CLOSE.IDLE, 'idle'), idleMs)
     }
     touch()
-    timers.push(setTimeout(() => session.end(4000, 'session limit'), maxSessionMs))
+    timers.push(setTimeout(() => session.end(STT_CLOSE.SESSION_LIMIT, 'session limit'), maxSessionMs))
     // Which start of the page's voice loop this is (voice.ts), so a session
     // that later idles out or is closed as blocked can be matched to it.
     if (why !== undefined) log(`stt session started (${startReason(why)})`)
@@ -202,8 +203,8 @@ export function createSttProxy({
     } catch (err) {
       // The code only (ERR_INVALID_CHAR and the like): a message could quote the header.
       log(`stt upstream could not be opened (${err?.code ?? err?.name ?? 'error'})`)
-      sendClient({ t: 'err' })
-      session.end(4502, 'upstream')
+      sendClient({ t: STT_MESSAGES.ERROR })
+      session.end(STT_CLOSE.UPSTREAM, 'upstream')
       return
     }
 
@@ -217,7 +218,7 @@ export function createSttProxy({
           if (upstream.readyState === WebSocket.OPEN) upstream.send(JSON.stringify({ type: 'KeepAlive' }))
         }, keepAliveMs),
       )
-      sendClient({ t: 'ready' })
+      sendClient({ t: STT_MESSAGES.READY })
     })
     upstream.on('message', (data, isBinary) => {
       if (isBinary) return
@@ -227,14 +228,14 @@ export function createSttProxy({
     // Only the status goes to the log: the body of a refusal is Deepgram's, not ours.
     upstream.on('unexpected-response', (_req, res) => {
       log(`stt upstream refused the session (${res.statusCode})`)
-      sendClient({ t: 'err' })
-      session.end(4502, 'upstream')
+      sendClient({ t: STT_MESSAGES.ERROR })
+      session.end(STT_CLOSE.UPSTREAM, 'upstream')
     })
     upstream.on('error', (err) => {
       if (!ended) {
         log(`stt upstream socket error (${err?.code ?? err?.name ?? 'error'})`)
-        sendClient({ t: 'err' })
-        session.end(4502, 'upstream')
+        sendClient({ t: STT_MESSAGES.ERROR })
+        session.end(STT_CLOSE.UPSTREAM, 'upstream')
       }
     })
     upstream.on('close', (code, reason) => {
@@ -244,7 +245,7 @@ export function createSttProxy({
         const why = String(reason ?? '').replace(/[^\x20-\x7e]/g, '').slice(0, 80)
         log(`stt upstream closed (${code}${why ? `, ${why}` : ''})`)
       }
-      session.end(4502, 'upstream closed')
+      session.end(STT_CLOSE.UPSTREAM, 'upstream closed')
     })
 
     client.on('message', (data, isBinary) => {
@@ -253,17 +254,17 @@ export function createSttProxy({
       if (!isBinary) return
       const frame = Buffer.isBuffer(data) ? data : Buffer.concat(Array.isArray(data) ? data : [Buffer.from(data)])
       if (frame.length === 0) return
-      if (frame.length > MAX_FRAME_BYTES) return session.end(1009, 'frame too large')
+      if (frame.length > MAX_FRAME_BYTES) return session.end(STT_CLOSE.TOO_LARGE, 'frame too large')
       bytes += frame.length
-      if (bytes > maxBytes) return session.end(1009, 'too much audio')
+      if (bytes > maxBytes) return session.end(STT_CLOSE.TOO_LARGE, 'too much audio')
       touch()
       if (ready) upstream.send(frame)
       else if (queue.length < MAX_QUEUED_FRAMES) queue.push(frame)
     })
     // The page's own reason (4000–4099, e.g. 4010: the phone would not start
     // the audio) is kept for the log line; anything else is a plain close.
-    client.on('close', (code) => session.end(code >= 4000 && code < 4100 ? code : 1000, 'client closed'))
-    client.on('error', () => session.end(1011, 'client error'))
+    client.on('close', (code) => session.end(code >= PAGE_CLOSE_RANGE.MIN && code <= PAGE_CLOSE_RANGE.MAX ? code : STT_CLOSE.NORMAL, 'client closed'))
+    client.on('error', () => session.end(STT_CLOSE.CLIENT_ERROR, 'client error'))
   }
 
   return { accept, active: () => sessions.length > 0, count: () => sessions.length }

@@ -1,4 +1,5 @@
 import type { ScribeHooks, ScribeLink } from './scribeVoice'
+import { STT_CLOSE, type SttMessage } from '../../shared/protocol.mjs'
 
 /**
  * Deepgram recognition as the hooks scribeVoice.ts already speaks.
@@ -10,12 +11,8 @@ import type { ScribeHooks, ScribeLink } from './scribeVoice'
  * bridge, which does (see bridge/deepgramProxy.mjs).
  */
 
-/** What the bridge sends. Anything else is ignored. */
-export type SttMessage =
-  | { t: 'ready' }
-  | { t: 'r'; text: string; final: boolean; speech: boolean }
-  | { t: 'u' }
-  | { t: 'err' }
+/** What the bridge sends (shared/protocol.d.mts). Anything else is ignored. */
+export type { SttMessage }
 
 const join = (a: string, b: string) => (a && b ? `${a} ${b}` : a || b)
 
@@ -92,12 +89,12 @@ const MAX_BUFFERED = 512 * 1024
  * The page's own reasons for closing the session, so the bridge log says why a
  * phone was deaf instead of an idle timeout 30 s later. Names nothing else.
  */
-export const CLOSE_AUDIO_BLOCKED = 4010
-export const CLOSE_CAPTURE_FAILED = 4011
+export const CLOSE_AUDIO_BLOCKED = STT_CLOSE.AUDIO_BLOCKED
+export const CLOSE_CAPTURE_FAILED = STT_CLOSE.CAPTURE_FAILED
 /** The capture's worklet module did not load in time (audioStart.ts). */
-export const CLOSE_WORKLET_STALLED = 4012
+export const CLOSE_WORKLET_STALLED = STT_CLOSE.WORKLET_STALLED
 /** A running capture stopped delivering: the microphone's track ended (pcmCapture.ts). */
-export const CLOSE_AUDIO_STALLED = 4013
+export const CLOSE_AUDIO_STALLED = STT_CLOSE.AUDIO_STALLED
 
 /**
  * Open the bridge socket and, once the bridge says the upstream session is up,
@@ -181,7 +178,7 @@ export async function connectDeepgram(hooks: ScribeHooks, d: DeepgramDeps): Prom
       closed = true
       stopCapture()
       try {
-        ws.close(1000)
+        ws.close(STT_CLOSE.NORMAL)
       } catch {
         /* already gone */
       }
