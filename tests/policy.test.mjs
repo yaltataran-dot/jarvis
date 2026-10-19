@@ -76,13 +76,32 @@ test('the switch is read once, strictly: only `true` allows writes', () => {
   for (const v of [undefined, 1, '1', 'true', null]) assert.equal(createToolPolicy({ allowWrites: v }).decideTool('Bash'), false, String(v))
 })
 
+test('the last gate (canUseTool): an SDK PermissionResult from decideTool, logged; a denial says nothing to read out', async (t) => {
+  const log = t.mock.method(console, 'log', () => {})
+  const off = createToolPolicy({ allowWrites: false })
+  assert.deepEqual(await off.canUseTool('WebSearch'), { behavior: 'allow' })
+  assert.deepEqual(await off.canUseTool('Bash', { command: 'touch x' }, {}), {
+    behavior: 'deny',
+    message:
+      'Blocked: JARVIS is running in read-only mode and cannot take actions that change anything. Tell the user this action is unavailable until they enable write access on the machine.',
+  })
+  assert.deepEqual(await createToolPolicy({ allowWrites: true }).canUseTool('Bash'), { behavior: 'allow' })
+  assert.deepEqual(
+    log.mock.calls.map((c) => c.arguments[0]),
+    ['[jarvis] tool WebSearch -> allow', '[jarvis] tool Bash -> deny', '[jarvis] tool Bash -> allow'],
+  )
+})
+
 test('wiring: the bridge builds one policy from its writes switch and uses it at every gate; the old definitions are gone', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(server, /import \{ createToolPolicy \} from '\.\/policy\.mjs'/)
-  assert.match(server, /const \{ decideTool, disallowedBuiltins: DISALLOWED_BUILTINS \} = createToolPolicy\(\{ allowWrites: ALLOW_WRITES \}\)/)
+  assert.match(server, /const \{ decideTool, canUseTool, disallowedBuiltins: DISALLOWED_BUILTINS \} = createToolPolicy\(\{ allowWrites: ALLOW_WRITES \}\)/)
   assert.match(server, /const ALLOW_WRITES = WRITES\.allowed/)
   assert.match(server, /disallowedTools: DISALLOWED_BUILTINS,/, 'taken from the model through the SDK')
-  assert.match(server, /canUseTool: async \(toolName\) => \{\n\s+const ok = decideTool\(toolName\)/, 'the last gate')
+  // The last gate: the policy's own canUseTool, deciding with the same decideTool.
+  assert.match(server, /^ {6}canUseTool,$/m, 'the last gate')
+  const policy = readFileSync(new URL('../bridge/policy.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(policy, /const canUseTool = async \(toolName\) => \{\n\s+const ok = decideTool\(toolName\)/)
   // The HUD announces only what may run: the badge (toolBadge.mjs) asks the same decideTool, and
   // server.mjs hands it that one and the tool frame.
   const badge = readFileSync(new URL('../bridge/toolBadge.mjs', import.meta.url), 'utf8').replace(/\r/g, '')

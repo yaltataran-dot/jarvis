@@ -75,7 +75,7 @@ are the largest remaining extraction (see the plan).
 | tools | `computer.mjs`, `pc.mjs`, `chrome.mjs`, `panels.mjs`, `ui.mjs`, `vision.mjs`, `visual.mjs`, `page.mjs`, `net.mjs`, `calendar.mjs`, `googleCalendar.mjs`, `music.mjs`, `yandexMusic.mjs` |
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
-| tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
+| tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`, and the SDK's last gate `canUseTool` deciding with it; built once from the writes switch) |
 | session inbox | `inbox.mjs` (one agent session's questions: `put`, `next`, `wait`, `close`; one per session, closed before it is replaced, read by the input generator as `next() ?? await wait()`; tests in `tests/inbox.test.mjs`) |
 | latency | `latency.mjs` (a turn's `[latency]` line: `latNew(id)`, `latencyLine(lat, outcome, end)`, `ms`; the record itself stays in `server.mjs`, where the stream, the hand-over and the turn queue write to it; tests in `tests/latency.test.mjs`) |
 | tool badge | `toolBadge.mjs` (which tool calls the page's HUD is told about, and when: `createToolBadge({ decideTool, show, called })` per socket — allowed tools at once, the rest held until their result, the HUD's own tools never; tests in `tests/toolBadge.test.mjs`) |

@@ -181,5 +181,35 @@ export function createToolPolicy({ allowWrites }) {
     return ALLOW_WRITES
   }
 
-  return { decideTool, disallowedBuiltins: DISALLOWED_BUILTINS, mcpServerOf, mcpToolOf }
+  /**
+   * The SDK's canUseTool, deciding with decideTool. Moved from server.mjs's
+   * session options unchanged.
+   *
+   * Signature is (toolName, input, options) and it must return a
+   * PermissionResult object. Returning a bare boolean silently denies
+   * everything, with the tool name arriving undefined.
+   *
+   * Worth knowing: this is a last gate, not the only one. Calls the CLI
+   * has already settled never arrive here — its own classifier waves
+   * through a `Bash: echo hello` without asking, and only reaches us for
+   * something with a consequence, like a `touch`. So a deny here is
+   * reliable; an absence of a call here is not proof nothing ran.
+   */
+  const canUseTool = async (toolName) => {
+    const ok = decideTool(toolName)
+    console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
+    return ok
+      ? { behavior: 'allow' }
+      : {
+          behavior: 'deny',
+          // Every word of this can end up spoken, so it carries no command
+          // to read out — the persona is forbidden from saying one aloud.
+          message:
+            'Blocked: JARVIS is running in read-only mode and cannot take' +
+            ' actions that change anything. Tell the user this action is' +
+            ' unavailable until they enable write access on the machine.',
+        }
+  }
+
+  return { decideTool, canUseTool, disallowedBuiltins: DISALLOWED_BUILTINS, mcpServerOf, mcpToolOf }
 }

@@ -158,7 +158,7 @@ const ROUTE_EFFORT = !process.env.JARVIS_EFFORT
  * writes switch; DISALLOWED_BUILTINS goes to the SDK, decideTool to canUseTool
  * and the HUD's tool announcements.
  */
-const { decideTool, disallowedBuiltins: DISALLOWED_BUILTINS } = createToolPolicy({ allowWrites: ALLOW_WRITES })
+const { decideTool, canUseTool, disallowedBuiltins: DISALLOWED_BUILTINS } = createToolPolicy({ allowWrites: ALLOW_WRITES })
 
 /**
  * The folders the jarvis_pc tools may see: the project, plus any listed in
@@ -830,30 +830,8 @@ wss.on('connection', (socket, req) => {
       // would sit silent until the entire answer was written. Partial events
       // are what let speech start on the first finished sentence.
       includePartialMessages: true,
-      // Signature is (toolName, input, options) and it must return a
-      // PermissionResult object. Returning a bare boolean silently denies
-      // everything, with the tool name arriving undefined.
-      //
-      // Worth knowing: this is a last gate, not the only one. Calls the CLI
-      // has already settled never arrive here — its own classifier waves
-      // through a `Bash: echo hello` without asking, and only reaches us for
-      // something with a consequence, like a `touch`. So a deny here is
-      // reliable; an absence of a call here is not proof nothing ran.
-      canUseTool: async (toolName) => {
-        const ok = decideTool(toolName)
-        console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
-        return ok
-          ? { behavior: 'allow' }
-          : {
-              behavior: 'deny',
-              // Every word of this can end up spoken, so it carries no command
-              // to read out — the persona is forbidden from saying one aloud.
-              message:
-                'Blocked: JARVIS is running in read-only mode and cannot take' +
-                ' actions that change anything. Tell the user this action is' +
-                ' unavailable until they enable write access on the machine.',
-            }
-      },
+      // The last gate, the same decideTool (policy.mjs).
+      canUseTool,
     },
   })
 
