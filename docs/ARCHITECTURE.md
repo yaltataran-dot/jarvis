@@ -76,14 +76,15 @@ are the largest remaining extraction (see the plan).
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
-| HTTP routes | `http/knowledge.mjs` (`POST /knowledge/answer`), `http/calendar.mjs` (`POST /calendar`; what may be written stays with `googleCalendar.mjs`) |
+| HTTP routes | `http/knowledge.mjs` (`POST /knowledge/answer`), `http/calendar.mjs` (`POST /calendar`; what may be written stays with `googleCalendar.mjs`), `http/music.mjs` (`POST /music`; actions and player calls stay with `yandexMusic.mjs`) |
 
 `server.mjs` is the bridge's composition root. It still holds the other HTTP
 routes and the session protocol, and it keeps everything that comes before
 any route — the Host and Origin checks, `OPTIONS`, the CORS headers — handing
 a moved route only the `cors` headers it built. Routes move one at a time,
 each with tests written against the code while it was still in `server.mjs`
-(`tests/policy.test.mjs`, `tests/httpKnowledge.test.mjs`, `tests/httpCalendar.test.mjs`).
+(`tests/policy.test.mjs`, `tests/httpKnowledge.test.mjs`, `tests/httpCalendar.test.mjs`,
+`tests/httpMusic.test.mjs`).
 
 ## Contracts (page ↔ bridge)
 
@@ -160,8 +161,8 @@ A release set lists its files explicitly, so the shared layer has to be in it:
 - Files added since the deployed release (mr5) that the bridge needs at run
   time: `shared/protocol.mjs` (with `shared/protocol.d.mts` and `shared/ui.ts`
   for the page build), `bridge/policy.mjs`, `bridge/http/knowledge.mjs`,
-  `bridge/http/calendar.mjs`. `server.mjs` imports the last three at start-up;
-  without them it does not start.
+  `bridge/http/calendar.mjs`, `bridge/http/music.mjs`. `server.mjs` imports the
+  last four at start-up; without them it does not start.
 - `shared/` and `bridge/http/` are new directories on the server. Installing
   new files must create their directories (`install -D -m 644`); the current
   deploy scripts install new files with `install -m 644`, which does not, and

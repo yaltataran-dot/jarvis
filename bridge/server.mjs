@@ -50,7 +50,8 @@ import { createBudget, createFallback, fallbackConfig, fileStore } from './fallb
 import { cleanInfo, createTurnLog } from './turnLog.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
-import { createYandexMusic, musicAction } from './yandexMusic.mjs'
+import { createYandexMusic } from './yandexMusic.mjs'
+import { MUSIC_PATH, musicRequest } from './http/music.mjs'
 import { musicServer } from './music.mjs'
 import { createGoogleCalendar } from './googleCalendar.mjs'
 import { CALENDAR_PATH, calendarRequest } from './http/calendar.mjs'
@@ -1201,26 +1202,9 @@ const handleRequest = async (req, res) => {
     return knowledgeAnswer(req, res, { cors, kb: KNOWLEDGE.kb, log: (line) => console.log(line), defer: setImmediate })
   }
 
-  if (req.method === 'POST' && req.url === '/music') {
-    let body = ''
-    for await (const chunk of req) {
-      body += chunk
-      if (body.length > 4096) {
-        req.destroy()
-        res.writeHead(413, cors)
-        return res.end('body too large')
-      }
-    }
-    let cmd
-    try {
-      cmd = JSON.parse(body || '{}')
-    } catch {
-      res.writeHead(400, cors)
-      return res.end('bad json')
-    }
-    const result = await musicAction(YM, cmd)
-    res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-    return res.end(JSON.stringify(result))
+  // Yandex Music commands the page recognises itself (http/music.mjs).
+  if (req.method === 'POST' && req.url === MUSIC_PATH) {
+    return musicRequest(req, res, { cors, ym: YM })
   }
 
   if (req.method === 'POST' && req.url === '/tts') {
