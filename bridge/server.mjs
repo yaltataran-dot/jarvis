@@ -54,6 +54,7 @@ import { createYandexMusic } from './yandexMusic.mjs'
 import { MUSIC_PATH, musicRequest } from './http/music.mjs'
 import { HEALTH_PATH, healthRequest } from './http/health.mjs'
 import { SCRIBE_TOKEN_PATH, scribeTokenRequest } from './http/scribe-token.mjs'
+import { TTS_PATH, ttsRequest } from './http/tts.mjs'
 import { musicServer } from './music.mjs'
 import { createGoogleCalendar } from './googleCalendar.mjs'
 import { CALENDAR_PATH, calendarRequest } from './http/calendar.mjs'
@@ -1152,120 +1153,9 @@ const handleRequest = async (req, res) => {
     return musicRequest(req, res, { cors, ym: YM })
   }
 
-  if (req.method === 'POST' && req.url === '/tts') {
-    const key = elevenKey()
-    const piperReady = piperVoices(LANG).length > 0
-    if (!key && !piperReady) {
-      res.writeHead(503, cors)
-      return res.end('no speech engine: no elevenlabs key and no piper voice')
-    }
-    // A spoken line is a few hundred bytes. Anything approaching this is not a
-    // sentence, and buffering it unbounded would let one request eat the heap.
-    let body = ''
-    let overflowed = false
-    for await (const chunk of req) {
-      body += chunk
-      if (body.length > 64 * 1024) {
-        overflowed = true
-        break
-      }
-    }
-    if (overflowed) {
-      req.destroy()
-      res.writeHead(400, cors)
-      return res.end('body too large')
-    }
-    // Inside a try: this handler is async with nothing catching its rejection,
-    // so a malformed body used to take the entire bridge down with it.
-    let text
-    let voice
-    // 'announce' for the start-up greeting; anything else is an answer.
-    let style
-    try {
-      ;({ text, voice, style } = JSON.parse(body || '{}'))
-    } catch {
-      res.writeHead(400, cors)
-      return res.end('bad json')
-    }
-    if (!text || typeof text !== 'string') {
-      res.writeHead(400, cors)
-      return res.end('no text')
-    }
-
-    // The local voice. Whole WAV rather than a stream: piper writes the file
-    // only once the sentence is done, and a sentence is a few hundred ms.
-    const speakLocally = async () => {
-      try {
-        const wav = await piperSpeak(
-          text,
-          LANG,
-          typeof voice === 'string' ? voice : null,
-          typeof style === 'string' ? style : 'normal',
-        )
-        res.writeHead(200, {
-          ...cors,
-          'content-type': 'audio/wav',
-          'content-length': wav.length,
-          'cache-control': 'no-cache',
-        })
-        return res.end(wav)
-      } catch (err) {
-        console.error(`[jarvis] piper failed: ${err?.message ?? err}`)
-        res.writeHead(502, cors)
-        return res.end(redactSecrets(String(err?.message ?? err)))
-      }
-    }
-    if (!key) return speakLocally()
-
-    try {
-      const upstream = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream` +
-          // 22kHz mono is half the bytes of 44kHz and indistinguishable through
-          // a laptop speaker; optimize_streaming_latency=3 trades a little
-          // prosody for a much earlier first byte.
-          `?output_format=mp3_22050_32&optimize_streaming_latency=3`,
-        {
-          method: 'POST',
-          headers: { 'xi-api-key': key, 'content-type': 'application/json' },
-          body: JSON.stringify({
-            text,
-            // Flash is the low-latency model — a conversation needs speed more
-            // than it needs the last few percent of quality.
-            model_id: 'eleven_flash_v2_5',
-            // Stated, not detected. Left to guess, Flash reads a short Russian
-            // line like "Готово, сэр." with English phonetics.
-            language_code: LANG,
-            voice_settings: {
-              stability: 0.4,
-              similarity_boost: 0.75,
-              speed: 1.05,
-            },
-          }),
-        },
-      )
-      if (!upstream.ok) {
-        // Out of credit, or the key was revoked: a local voice beats the
-        // browser's, so use it when there is one.
-        if (piperReady) return speakLocally()
-        res.writeHead(upstream.status, cors)
-        return res.end(await upstream.text())
-      }
-
-      // Pipe it through rather than buffering. Waiting for the whole file here
-      // would throw away everything the streaming endpoint just bought us.
-      res.writeHead(200, {
-        ...cors,
-        'content-type': 'audio/mpeg',
-        'cache-control': 'no-cache',
-      })
-      for await (const chunk of upstream.body) res.write(Buffer.from(chunk))
-      return res.end()
-    } catch (err) {
-      if (res.headersSent) return res.destroy()
-      if (piperReady) return speakLocally()
-      res.writeHead(502, cors)
-      return res.end(redactSecrets(String(err?.message ?? err)))
-    }
+  // Spoken answers: ElevenLabs streamed, or the local Piper voice (http/tts.mjs).
+  if (req.method === 'POST' && req.url === TTS_PATH) {
+    return ttsRequest(req, res, { cors, lang: LANG, voiceId: VOICE_ID, elevenKey, piperVoices, piperSpeak, redact: redactSecrets })
   }
 
   // Speech to text. The browser captures one spoken segment as a compressed
