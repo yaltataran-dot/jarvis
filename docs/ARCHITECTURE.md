@@ -76,11 +76,14 @@ are the largest remaining extraction (see the plan).
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
+| HTTP routes | `http/knowledge.mjs` (`POST /knowledge/answer`) |
 
-`server.mjs` is the bridge's composition root and still holds the HTTP routes
-and the session protocol; splitting those out is a later step. The tool
-policy moved out unchanged (`tests/policy.test.mjs` was written against the
-code in `server.mjs` before the move).
+`server.mjs` is the bridge's composition root. It still holds the other HTTP
+routes and the session protocol, and it keeps everything that comes before
+any route — the Host and Origin checks, `OPTIONS`, the CORS headers — handing
+a moved route only the `cors` headers it built. Routes move one at a time,
+each with tests written against the code while it was still in `server.mjs`
+(`tests/policy.test.mjs`, `tests/httpKnowledge.test.mjs`).
 
 ## Contracts (page ↔ bridge)
 
@@ -154,10 +157,14 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   does not start. The release check's import-resolution step catches a
   missing file (every relative import must resolve inside the release or on
   the server).
-- `shared/` is a new directory on the server. Installing new files must create
-  their directories (`install -D`); the current deploy scripts install new
-  files with `install -m 644`, which does not, and must be changed for the
-  first release that carries `shared/`.
+- Files added since the deployed release (mr5) that the bridge needs at run
+  time: `shared/protocol.mjs` (with `shared/protocol.d.mts` and `shared/ui.ts`
+  for the page build), `bridge/policy.mjs`, `bridge/http/knowledge.mjs`.
+  `server.mjs` imports the last two at start-up; without them it does not start.
+- `shared/` and `bridge/http/` are new directories on the server. Installing
+  new files must create their directories (`install -D -m 644`); the current
+  deploy scripts install new files with `install -m 644`, which does not, and
+  must be changed for the first release that carries them.
 - A release that changes `bridge/` restarts the bridge; one that changes only
   the page and `shared/` types does not need to.
 - Comments must not contain `from '<relative path>'`: the import-resolution

@@ -54,7 +54,8 @@ import { createYandexMusic, musicAction } from './yandexMusic.mjs'
 import { musicServer } from './music.mjs'
 import { calendarAction, createGoogleCalendar } from './googleCalendar.mjs'
 import { calendarServer } from './calendar.mjs'
-import { answerRequest, formatNotes, notesFor, startKnowledge } from './knowledgeRoute.mjs'
+import { formatNotes, notesFor, startKnowledge } from './knowledgeRoute.mjs'
+import { KNOWLEDGE_ANSWER_PATH, knowledgeAnswer } from './http/knowledge.mjs'
 import { agentEnv, installLogRedaction, redactSecrets, registerSecrets, secretValuesFrom, writesAllowed } from './secrets.mjs'
 import { createToolPolicy } from './policy.mjs'
 
@@ -1211,28 +1212,9 @@ const handleRequest = async (req, res) => {
   }
 
   // A question the page asks before it asks Claude: is it one the user has
-  // already told JARVIS the answer to? Read-only; a miss is a normal 200 with
-  // hit:false, and a bridge without a database simply always misses.
-  if (req.method === 'POST' && req.url === '/knowledge/answer') {
-    let body = ''
-    for await (const chunk of req) {
-      body += chunk
-      if (body.length > 4096) {
-        req.destroy()
-        res.writeHead(413, cors)
-        return res.end('body too large')
-      }
-    }
-    let ask
-    try {
-      ask = JSON.parse(body || '{}')
-    } catch {
-      res.writeHead(400, cors)
-      return res.end('bad json')
-    }
-    const result = answerRequest(KNOWLEDGE.kb, ask, { log: (line) => console.log(line), defer: setImmediate })
-    res.writeHead(200, { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' })
-    return res.end(JSON.stringify(result))
+  // already told JARVIS the answer to? (http/knowledge.mjs)
+  if (req.method === 'POST' && req.url === KNOWLEDGE_ANSWER_PATH) {
+    return knowledgeAnswer(req, res, { cors, kb: KNOWLEDGE.kb, log: (line) => console.log(line), defer: setImmediate })
   }
 
   if (req.method === 'POST' && req.url === '/music') {
