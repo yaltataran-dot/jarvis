@@ -200,7 +200,7 @@ test('wiring: /stt reaches this handler with the bridge\'s key, language and red
   const route = "if (req.method === 'POST' && req.url === STT_HTTP_PATH) {\n    return sttRequest(req, res, { cors, lang: LANG, elevenKey, redact: redactSecrets })"
   assert.ok(srv.includes(route), 'no fetch passed: the real one, as before')
   // STT_PATH is still the Deepgram socket's '/stt-stream', from deepgramProxy.mjs, used by the upgrade only.
-  assert.match(srv, /import \{ STT_PATH, cleanKey, createSttProxy, keyProblem \} from '\.\/deepgramProxy\.mjs'/)
+  assert.match(srv, /import \{ STT_PATH, createSttProxy, keyProblem \} from '\.\/deepgramProxy\.mjs'/)
   assert.ok(srv.includes("path !== '/' && path !== '/ws' && path !== STT_PATH"), 'the socket upgrade still knows /stt-stream')
   assert.ok(!/req\.method === 'POST' && req\.url === STT_PATH\b/.test(srv), 'no HTTP route on the socket path')
   const at = srv.indexOf(route)

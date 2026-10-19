@@ -108,7 +108,10 @@ test('wiring: the bridge routes the same request to this handler with its own lo
   assert.match(srv, /import \{ HEALTH_PATH, healthRequest \} from '\.\/http\/health\.mjs'/)
   const route = "if (req.method === 'GET' && req.url === HEALTH_PATH) {\n    return healthRequest(req, res, { cors, lang: LANG, elevenKey, sttEngine, piperVoices, defaultPiperVoice })"
   assert.ok(srv.includes(route), 'the same lookups as the code it replaced')
-  for (const f of ['function elevenKey() {', 'function sttEngine() {']) assert.ok(srv.includes(f), `${f} stays in the bridge`)
+  // The lookups stay in the bridge: defined in settings.mjs, built once by server.mjs from process.env.
+  const settings = readFileSync(new URL('../bridge/settings.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  for (const f of ['function elevenKey() {', 'function sttEngine() {']) assert.ok(settings.includes(f), `${f} stays in the bridge`)
+  assert.ok(srv.includes('const { elevenKey, deepgramKey, sttEngine } = createVoiceKeys({ env: process.env, homedir })'))
   assert.match(srv, /import \{ defaultPiperVoice, piperSpeak, piperVoices, warmPiper \} from '\.\/piper\.mjs'/)
   const at = srv.indexOf(route)
   const handler = srv.indexOf('const handleRequest = async (req, res) => {')

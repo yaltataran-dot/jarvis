@@ -16,7 +16,7 @@
  */
 
 import { WebSocketServer } from 'ws'
-import { STT_PATH, cleanKey, createSttProxy, keyProblem } from './deepgramProxy.mjs'
+import { STT_PATH, createSttProxy, keyProblem } from './deepgramProxy.mjs'
 import { createResumable, transcriptPath } from './resumable.mjs'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { displayServer } from './panels.mjs'
@@ -24,8 +24,8 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { join, resolve as resolvePath } from 'node:path'
+import { existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
 import { effortFor } from './effort.mjs'
 import { asidesFrom, createAsideLedger, createBlockJoin, formatAsides, withAside } from './turnText.mjs'
@@ -69,6 +69,7 @@ import { createAccess } from './access.mjs'
 import { createPageRequests } from './pageRequests.mjs'
 import { createToolBadge } from './toolBadge.mjs'
 import { latNew, latencyLine, ms } from './latency.mjs'
+import { configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from './settings.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 // Loopback only by default. Bound to every interface, the agent socket and the
@@ -243,58 +244,16 @@ function backupLoginDir(raw) {
   return null
 }
 
-const PC_ROOTS = [
-  PROJECT_ROOT,
-  ...(process.env.JARVIS_PC_ROOTS ?? '').split(';').map((s) => s.trim()).filter(Boolean),
-]
+// Where the computer tools may work (settings.mjs).
+const PC_ROOTS = pcRoots(process.env, PROJECT_ROOT)
 
-/**
- * Every MCP server Claude Code has configured, read out of its own config.
- *
- * This does two jobs. The HUD wants the names while the boot animation plays,
- * and the agent doesn't emit its init message — and therefore its server
- * list — until the first user message flows through, which is far too late.
- * More importantly, this bridge turns filesystem settings off (see
- * settingSources below) and the SDK stops discovering these servers on its
- * own, so handing them over explicitly is what keeps the local stdio ones —
- * the whole reason the bridge exists — in play.
- *
- * Only the global block and the home-directory project scope, because
- * homedir() is our cwd. That makes the list a close but not exact match for
- * the agent's own: the 'ready' sent on connect comes from here and the second
- * one, sent from the init message a turn later, carries live status. Expect
- * the two to differ, and treat the later one as authoritative.
- */
-function configuredServers() {
-  try {
-    const cfg = JSON.parse(
-      readFileSync(join(homedir(), '.claude.json'), 'utf8'),
-    )
-    return {
-      ...(cfg.mcpServers ?? {}),
-      // Servers scoped to the home directory apply too, since that's our cwd.
-      ...(cfg.projects?.[homedir()]?.mcpServers ?? {}),
-    }
-  } catch {
-    return {}
-  }
-}
-
-const MCP_SERVERS = configuredServers()
+// Every MCP server Claude Code has configured, handed to each session because
+// settingSources is off (settings.mjs).
+const MCP_SERVERS = configuredServers(homedir)
 
 
-/**
- * The language he answers in. Reads JARVIS_LANG, or the frontend's VITE_LANG
- * when only that is set, so one variable in the shell switches both halves.
- * Russian by default; 'en' restores the original English JARVIS.
- */
-const LANG = (() => {
-  const raw = (process.env.JARVIS_LANG ?? process.env.VITE_LANG ?? '').trim().toLowerCase()
-  if (raw === '' || raw === 'ru') return 'ru'
-  if (raw === 'en') return 'en'
-  console.warn(`[jarvis] JARVIS_LANG="${raw}" is not ru or en — using ru.`)
-  return 'ru'
-})()
+// The language he answers in: JARVIS_LANG or VITE_LANG, Russian by default (settings.mjs).
+const LANG = languageFrom(process.env)
 
 /**
  * Diagnostics, both off by default.
@@ -326,45 +285,10 @@ const DRY_REPLY =
 
 const SYSTEM_PROMPT = systemPromptFor(LANG)
 
-/**
- * ElevenLabs credentials, borrowed from the MCP server config.
- *
- * If you've set up the elevenlabs MCP server, the key is already on this
- * machine — no reason to make you paste it into a second .env file. The browser
- * never sees it: it POSTs text to /tts here and gets audio back.
- */
-function elevenKey() {
-  if (process.env.ELEVENLABS_API_KEY) return process.env.ELEVENLABS_API_KEY
-  try {
-    const cfg = JSON.parse(
-      readFileSync(join(homedir(), '.claude.json'), 'utf8'),
-    )
-    return cfg.mcpServers?.elevenlabs?.env?.ELEVENLABS_API_KEY ?? null
-  } catch {
-    return null
-  }
-}
-
-/**
- * Deepgram credential, from the environment only (systemd loads
- * /opt/jarvis/.env.bridge). Never read from a file here, never sent to the
- * browser, never logged. Blank counts as missing.
- */
-const deepgramKey = () => cleanKey(process.env.DEEPGRAM_API_KEY)
-
-/**
- * Which engine does realtime recognition. JARVIS_STT=elevenlabs|deepgram pins
- * it (a pinned engine without its key means the browser engine); unset, a
- * Deepgram key wins over an ElevenLabs one.
- */
-function sttEngine() {
-  const pin = (process.env.JARVIS_STT ?? '').trim().toLowerCase()
-  const dg = Boolean(deepgramKey())
-  const eleven = Boolean(elevenKey())
-  if (pin === 'elevenlabs') return eleven ? 'elevenlabs' : null
-  if (pin === 'deepgram') return dg ? 'deepgram' : null
-  return dg ? 'deepgram' : eleven ? 'elevenlabs' : null
-}
+// The voice keys — ElevenLabs (also from the elevenlabs MCP server's config)
+// and Deepgram (environment only) — and the recognition engine they make,
+// read afresh on every call (settings.mjs).
+const { elevenKey, deepgramKey, sttEngine } = createVoiceKeys({ env: process.env, homedir })
 
 /** Agent sessions a page may pick up again after its socket drops — see resumable.mjs. */
 const RESUMABLE = createResumable()
@@ -397,24 +321,8 @@ const IMAGE_TYPES = {
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024
 
-const FILE_ROOTS = [
-  homedir(),
-  // Both temp directories, because on macOS os.tmpdir() is the per-user
-  // $TMPDIR under /var/folders while half the tools that take a screenshot
-  // still write it to /tmp. Dropping one of them loses real panels.
-  tmpdir(),
-  '/tmp',
-  ...(process.env.JARVIS_FILE_ROOTS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
-].map((root) => {
-  try {
-    return realpathSync(root)
-  } catch {
-    return resolvePath(root)
-  }
-})
+// Home, both temp folders and JARVIS_FILE_ROOTS, realpath'd once (settings.mjs).
+const FILE_ROOTS = fileRoots(process.env, { homedir, tmpdir })
 
 /** True when `real` sits inside one of the roots, after both are resolved. */
 const withinRoots = withinRootsOf(FILE_ROOTS)
