@@ -466,7 +466,10 @@ test('wiring: the page pings, hears every frame, checks on its return, fails a q
   assert.match(bridge, /if \(pending\?\.ws === ws\) pending\.lost\?\.\(\)/)
   assert.match(bridge, /pending = \{ finish, ws, lost: onClose \}/)
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
-  assert.match(server, /if \(msg\.type === 'ping'\) \{\n {6}send\(\{ type: 'pong' \}\)\n {6}return/)
+  // The page's frames are read in pageFrames.mjs, on every message of the socket, with its send.
+  const frames = readFileSync(new URL('../bridge/pageFrames.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(frames, /if \(msg\.type === 'ping'\) \{\n {6}send\(\{ type: 'pong' \}\)\n {6}return/)
+  assert.match(server, /socket\.on\(\n {4}'message',\n {4}createPageFrames\(\{\n {6}s,\n {6}send,\n/)
   const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8').replace(/\r/g, '')
   // The boot's failure is taken back once connected; 'down' is the link state's (linkStatus.test.ts).
   assert.match(app, /if \(state === 'open'\) \{\n {8}link\.restored\(\)\n.*\n {8}if \(shown && shown === bootFailure\) store\.getState\(\)\.setError\(null\)/)

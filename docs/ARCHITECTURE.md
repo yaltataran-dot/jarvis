@@ -77,6 +77,7 @@ are the largest remaining extraction (see the plan).
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`, and the SDK's last gate `canUseTool` deciding with it; built once from the writes switch) |
 | session lifecycle | `sessionLifecycle.mjs` (one socket's agent session: `sessionOptions` — what a session is opened with, the fixed parts and why — and `createSessionLifecycle`: start, move to another login, restart after a turn that will not end, replace to resume; on the socket's state, with opening and reading the stream passed in; tests in `tests/sessionLifecycle.test.mjs`, and through the handler in `tests/sessionCore.test.mjs`) |
+| page frames | `pageFrames.mjs` (the page's frames on one agent socket, `createPageFrames` → the socket's `message` handler: `trace` to the log (`recordTrace`), `ping` answered with `pong`, `ask` handed to the turn queue with its asides read and a latency record — or answered without the model in DRY mode — `reply` to the bridge's own requests, `interrupt` to the turn queue, and `resume`: only before a question, only a session this bridge handed out to this login and still on disk, the old holder ended, the session replaced on it and `resumed` sent once it has started, a fresh session if it will not; built per socket by `server.mjs` after the first session is started, with its send, the turn queue, the session's `replace`, the resume registry and owner, the logins and the trace and DRY switches; tests in `tests/pageFrames.test.mjs`, through the handler in `tests/sessionCore.test.mjs` and `tests/bridgeSocket.test.mjs`) |
 | session input | `sessionInput.mjs` (what goes into one socket's agent session, `createSessionInput` → `userMessages(ch)`: questions read from the session's inbox as `next() ?? await wait()` until it or the socket closes, each with only the asides the session has not had (recorded at the hand-over) and the knowledge base's notes, the turn's effort set first — never fatal — a line when the user's Chrome is down, whether it may show a panel, and the `effort` frame to the page; built per socket by `server.mjs` with the turn's send, the knowledge base, the language and the effort routing and trace switches; tests in `tests/sessionInput.test.mjs`, and through the handler in `tests/sessionCore.test.mjs`) |
 | session stream | `sessionStream.mjs` (one socket's agent session as it streams, `createSessionStream` → `pump(q, gen)`: the SDK's messages turned into frames — words as they come, tools announced and settled, the turn's result decided by `turnResult.mjs` and handed to the turn queue, the session id and usable servers from init, API retries — while `gen` is the live session's; a live stream that dies or ends sends the redacted error and closes the turn queue, the inbox and the socket so the page reconnects; built per socket by `server.mjs` once the turn queue exists, with its send, the tool badge, the latency report and the resume registry passed in; tests through the handler in `tests/sessionCore.test.mjs`, wiring in `tests/protocol.test.ts`, `tests/resumable.test.mjs`, `tests/secrets.test.mjs`, `tests/toolBadge.test.mjs` and `tests/inbox.test.mjs`) |
 | socket state | `socketState.mjs` (one agent socket's state — its session and generation, the session id, the login, the inbox, the turn in flight, what has been asked and told — as one object per connection, `createSocketState`, started as the handler's own variables were; tests in `tests/socketState.test.mjs`) |
@@ -94,14 +95,19 @@ are the largest remaining extraction (see the plan).
 `http/`; `server.mjs` keeps the dispatch and everything that comes before any
 route — the Host and Origin checks (`access.mjs`), `OPTIONS`, the CORS
 headers — handing a route only the `cors` headers it built. It also wires the
-start-up (settings, policy, prompt, the shared services) and holds the agent
-socket: per connection, the session's lifecycle (open, restart, switch login,
-resume), the turn queue's wiring — including the login switching, one try
-per other login (`accounts.mjs`, `turns.mjs`) — and the page frames'
-dispatch. Those share one socket's mutable state, so they move only where a
-piece stands alone: `pageRequests.mjs`, `toolBadge.mjs`, `latency.mjs`, the socket's
+start-up (settings, policy, prompt, the shared services) and composes the agent
+socket: per connection, it makes the socket's state and each piece below on
+it, says how a session is opened (`query` with the input generator, the
+bridge's servers, prompt, model and login), wires the turn queue — including
+the login switching, one try per other login (`accounts.mjs`, `turns.mjs`) —
+and the fallback, and on the socket's close releases the session for resume
+and closes the turn queue, the inbox and the session. That close stays in
+`server.mjs`: it ends what the handler itself made, and a module of its own
+would only take all of it back as arguments. The rest share one socket's
+mutable state, so they moved only where a piece stands alone: `pageRequests.mjs`,
+`toolBadge.mjs`, `latency.mjs`, the socket's
 state (`socketState.mjs`), the session's lifecycle (`sessionLifecycle.mjs`), the input
-stream to the SDK (`userMessages`, `sessionInput.mjs`), the SDK stream turned into frames (`pump`, `sessionStream.mjs`), the session's
+stream to the SDK (`userMessages`, `sessionInput.mjs`), the SDK stream turned into frames (`pump`, `sessionStream.mjs`), the page's frames (`pageFrames.mjs`), the session's
 inbox (`inbox.mjs`), its MCP servers (`sessionServers.mjs`), the page's trace frames (`recordTrace` in `turnLog.mjs`), and what
 a turn's result means (`turnResult.mjs`), which the stream calls with the turn's
 values and then ends the turn itself, in the same order as before. Routes moved one at a time,
@@ -214,7 +220,7 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
   `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`,
   `bridge/http/file.mjs`, `bridge/http/proxy.mjs`, `bridge/http/page.mjs`,
-  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`, `bridge/inbox.mjs`, `bridge/sessionServers.mjs`, `bridge/socketState.mjs`, `bridge/sessionLifecycle.mjs`, `bridge/sessionStream.mjs`, `bridge/sessionInput.mjs`. `server.mjs` imports the last twenty-four at start-up; without them it does not start.
+  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`, `bridge/inbox.mjs`, `bridge/sessionServers.mjs`, `bridge/socketState.mjs`, `bridge/sessionLifecycle.mjs`, `bridge/sessionStream.mjs`, `bridge/sessionInput.mjs`, `bridge/pageFrames.mjs`. `server.mjs` imports the last twenty-five at start-up; without them it does not start.
   This list is not yet checked against the server: the local copy of production
   from 2026-10-17 also lacks `bridge/accounts.mjs`, `fallback.mjs`,
   `resumable.mjs`, `secrets.mjs` and `turns.mjs`, which `server.mjs` imports too.

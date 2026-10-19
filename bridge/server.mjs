@@ -17,19 +17,18 @@
 
 import { WebSocketServer } from 'ws'
 import { STT_PATH, createSttProxy, keyProblem } from './deepgramProxy.mjs'
-import { createResumable, transcriptPath } from './resumable.mjs'
+import { createResumable } from './resumable.mjs'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { chromeAvailable } from './chrome.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
-import { asidesFrom, createBlockJoin, formatAsides, withAside } from './turnText.mjs'
+import { createBlockJoin, formatAsides, withAside } from './turnText.mjs'
 import { fallbackDownMessage, limitMidTurnMessage, noLoginFrame, resultFailures } from './failures.mjs'
 import { createTurns } from './turns.mjs'
 import { createAccounts } from './accounts.mjs'
 import { createBudget, createFallback, fallbackConfig, fileStore } from './fallback.mjs'
-import { createTurnLog, recordTrace } from './turnLog.mjs'
+import { createTurnLog } from './turnLog.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
 import { createYandexMusic } from './yandexMusic.mjs'
 import { MUSIC_PATH, musicRequest } from './http/music.mjs'
@@ -50,12 +49,13 @@ import { systemPromptFor } from './prompt.mjs'
 import { createAccess } from './access.mjs'
 import { createPageRequests } from './pageRequests.mjs'
 import { createToolBadge } from './toolBadge.mjs'
-import { latNew, latencyLine, ms } from './latency.mjs'
+import { latencyLine, ms } from './latency.mjs'
 import { createTurnOutcome } from './turnResult.mjs'
 import { createSocketState } from './socketState.mjs'
 import { createSessionLifecycle, sessionOptions } from './sessionLifecycle.mjs'
 import { createSessionStream } from './sessionStream.mjs'
 import { createSessionInput } from './sessionInput.mjs'
+import { createPageFrames } from './pageFrames.mjs'
 import { sessionServers } from './sessionServers.mjs'
 import { backupLoginDirs, configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from './settings.mjs'
 
@@ -809,110 +809,27 @@ wss.on('connection', (socket, req) => {
 
   startSession()
 
-  socket.on('message', (raw) => {
-    let msg
-    try {
-      msg = JSON.parse(raw.toString())
-    } catch {
-      return
-    }
-
-    // A diagnostic breadcrumb from the page. Whitelisted shape, every field
-    // truncated, so nothing the page sends can flood or forge the log.
-    // (turnLog.mjs)
-    if (msg.type === 'trace') {
-      recordTrace(msg, { on: TRACE, dialog: DIALOG_LOG, turnLog: TURN_LOG })
-      return
-    }
-
-    // The page asking whether this socket still reaches us: after a VPN or
-    // network switch it can be open in name only (src/lib/redial.ts).
-    if (msg.type === 'ping') {
-      send({ type: 'pong' })
-      return
-    }
-
-    if (msg.type === 'ask' && typeof msg.text === 'string' && TRACE) {
-      console.log(
-        `[jarvis] ask ${String(msg.id).slice(0, 12)} received (${msg.text.length} chars)` +
-          (DRY_ASK ? ' — DRY, Claude not called' : ''),
-      )
-    }
-
-    // The same frames a real turn produces, minus the model.
-    if (msg.type === 'ask' && typeof msg.text === 'string' && DRY_ASK) {
-      const id = typeof msg.id === 'string' ? msg.id : null
-      setTimeout(() => {
-        send({ type: 'text', delta: DRY_REPLY, ask: id })
-        send({ type: 'done', text: DRY_REPLY, costUsd: 0, ask: id })
-      }, 1500)
-      return
-    }
-
-    // The page is back after its socket dropped and wants its conversation.
-    // Only before anything is asked here, and only a session this bridge
-    // handed out, to this login, within its time (resumable.mjs). Otherwise
-    // the fresh session stays and the page is told so — nothing is replayed.
-    if (msg.type === 'resume') {
-      let verdict = s.asked ? { ok: false, reason: 'already-asking' } : RESUMABLE.check(msg.id, s.account)
-      // Claude Code resumes from the transcript on disk; without it there is nothing to resume.
-      if (verdict.ok) {
-        const dir = ACCOUNTS.env(s.account, { ...AGENT_ENV }).CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-        if (!existsSync(transcriptPath(dir, homedir(), msg.id))) verdict = { ok: false, reason: 'no-transcript' }
-      }
-      if (!verdict.ok) {
-        console.log(`[jarvis] resume refused (${verdict.reason}) — new conversation`)
-        send({ type: 'resumed', ok: false })
-        return
-      }
-      // The old socket the server has not yet seen die: end it, so two sockets never share one session.
-      if (verdict.holder && verdict.holder !== owner) verdict.holder.close()
-      const wanted = msg.id
-      const gen = replace(wanted)
-      RESUMABLE.issue(wanted, s.account, owner)
-      // Said only once the resumed session has actually started. If it will not
-      // (a transcript that does not load), the page gets a fresh session and is
-      // told so — unless a question has meanwhile gone into this one, which then
-      // fails on its own and says why.
-      void Promise.resolve(s.session?.initializationResult?.()).then(
-        () => {
-          if (s.closed || gen !== s.sessionGen) return
-          console.log(`[jarvis] conversation resumed after reconnect${ACCOUNTS.switchable() ? ` (${s.account})` : ''}`)
-          send({ type: 'resumed', ok: true })
-        },
-        (err) => {
-          if (s.closed || gen !== s.sessionGen) return
-          console.warn(`[jarvis] resume failed (${String(err?.message ?? err).slice(0, 80)}) — new conversation`)
-          if (!s.asked) replace(null)
-          send({ type: 'resumed', ok: false })
-        },
-      )
-      return
-    }
-
-    if (msg.type === 'ask' && typeof msg.text === 'string') {
-      s.asked = true
-      // Each question keeps the session resumable for another thirty minutes.
-      if (s.sessionId) RESUMABLE.issue(s.sessionId, s.account, owner)
-      // Waits for the floor in turns.mjs: the turn before it is stopped and
-      // has to report its end first, or its last tokens land on this one.
-      // Measured before that wait existed: ask "one", interrupt, ask "two",
-      // and the answer to "two" came back as "One."
-      const id = typeof msg.id === 'string' ? msg.id : null
-      turns.ask(id, { text: msg.text, asides: asidesFrom(msg.asides), lat: latNew(id) })
-    }
-
-    if (msg.type === 'reply' && typeof msg.id === 'string') {
-      replied(msg)
-    }
-
-    if (msg.type === 'interrupt') {
-      if (TRACE) console.log('[jarvis] interrupt received')
-      // Stops the turn on the floor, primary or fallback, and drops any
-      // question still waiting behind it.
-      turns.interrupt()
-    }
-  })
+  // The page's frames on this socket (pageFrames.mjs). Handled from here on,
+  // after the first session has been started.
+  socket.on(
+    'message',
+    createPageFrames({
+      s,
+      send,
+      turns,
+      replace,
+      replied,
+      owner,
+      resumable: RESUMABLE,
+      accounts: ACCOUNTS,
+      agentEnv: AGENT_ENV,
+      trace: TRACE,
+      dialogLog: DIALOG_LOG,
+      turnLog: TURN_LOG,
+      dryAsk: DRY_ASK,
+      dryReply: DRY_REPLY,
+    }),
+  )
 
   // The code says who ended it: 1001 is the page reloading or closing, 1006 a
   // connection lost without a goodbye, 1000 a deliberate close.

@@ -52,5 +52,8 @@ test('no time from the page: now; no turn log: printed only', (t) => {
 
 test('server.mjs hands every trace frame here, with its switches, and answers nothing', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
-  assert.match(server, /if \(msg\.type === 'trace'\) \{\n {6}recordTrace\(msg, \{ on: TRACE, dialog: DIALOG_LOG, turnLog: TURN_LOG \}\)\n {6}return\n {4}\}/)
+  // The page's frames are read in pageFrames.mjs, with the bridge's switches passed in.
+  const frames = readFileSync(new URL('../bridge/pageFrames.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(frames, /if \(msg\.type === 'trace'\) \{\n {6}recordTrace\(msg, \{ on: trace, dialog: dialogLog, turnLog \}\)\n {6}return\n {4}\}/)
+  assert.match(server, /createPageFrames\(\{[^}]*\n {6}trace: TRACE,\n {6}dialogLog: DIALOG_LOG,\n {6}turnLog: TURN_LOG,\n/)
 })

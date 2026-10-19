@@ -283,7 +283,7 @@ test('the bridge is wired to all of it', () => {
   for (const shell of ["'Bash'", "'PowerShell'"]) assert.ok(disallowed.includes(shell), `${shell} not disallowed`)
   const writeSet = policy.slice(policy.indexOf('const WRITE_BUILTINS'), policy.indexOf('])', policy.indexOf('const WRITE_BUILTINS')))
   assert.ok(writeSet.includes("'PowerShell'") && writeSet.includes("'Bash'"))
-  for (const f of ['server.mjs', 'sessionStream.mjs', 'computer.mjs', 'piper.mjs', 'yandexMusic.mjs', 'googleCalendar.mjs']) {
+  for (const f of ['server.mjs', 'sessionStream.mjs', 'pageFrames.mjs', 'computer.mjs', 'piper.mjs', 'yandexMusic.mjs', 'googleCalendar.mjs']) {
     const src = readFileSync(new URL(`../bridge/${f}`, import.meta.url), 'utf8')
     assert.doesNotMatch(src, /\{\s*\.\.\.process\.env\b/, `${f} still spreads process.env into a child`)
   }

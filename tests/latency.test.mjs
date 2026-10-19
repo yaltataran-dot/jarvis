@@ -45,5 +45,9 @@ test('latNew: a fresh record on the monotonic clock, nothing else started', () =
 test('server.mjs keeps the record and prints the line once per turn', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(server, /const latReport = \(outcome\) => \{\n {4}if \(!s\.lat\) return\n {4}const end = performance\.now\(\)\n {4}console\.log\(latencyLine\(s\.lat, outcome, end\)\)\n {4}s\.lat = null\n {2}\}/)
-  assert.match(server, /lat: latNew\(id\)/)
+  // Started where the page's question is handed to the turn queue (pageFrames.mjs).
+  const frames = readFileSync(new URL('../bridge/pageFrames.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(frames, /turns\.ask\(id, \{ text: msg\.text, asides: asidesFrom\(msg\.asides\), lat: latNew\(id\) \}\)/)
+  assert.equal(frames.match(/latNew\(/g)?.length, 1)
+  assert.doesNotMatch(server, /latNew\(/)
 })

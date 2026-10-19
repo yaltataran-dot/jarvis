@@ -64,6 +64,8 @@ const failures = read('../bridge/failures.mjs')
 const sessionStream = read('../bridge/sessionStream.mjs')
 // What goes into the session: the question as the SDK's input, and the effort frame (sessionInput.mjs).
 const sessionInput = read('../bridge/sessionInput.mjs')
+// The page's frames, read and answered on each socket (pageFrames.mjs, built per socket in server.mjs with its send).
+const pageFrames = read('../bridge/pageFrames.mjs')
 // The HUD's own servers on each connection draw panels, blades and the interface (sessionServers.mjs).
 const sessionServers = read('../bridge/sessionServers.mjs')
 const pageBridge = read('../src/lib/bridge.ts')
@@ -73,7 +75,7 @@ test('the bridge sends exactly the bridge frames of the contract', () => {
   // `type: 'user'` is the Agent SDK's input message, not a frame; `subtype:` is not `type:`.
   const sent = all(server, /(?<![A-Za-z_])type: '([a-z_]+)'/g)
   sent.delete('user')
-  for (const t of all(turns + turnResult + failures + sessionServers + sessionStream, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
+  for (const t of all(turns + turnResult + failures + sessionServers + sessionStream + pageFrames, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
   assert.match(server, /const pump = createSessionStream\(\{\n\s+s,\n\s+turns,\n\s+send,\n\s+sendTurn,\n/, "the stream sends with the socket's send and the turn's")
   // Its `type: 'user'` is the SDK's input message, as in server.mjs before it moved; one, and only that.
   const input = all(sessionInput, /(?<![A-Za-z_])type: '([a-z_]+)'/g)
@@ -94,7 +96,10 @@ test('the bridge sends exactly the bridge frames of the contract', () => {
 })
 
 test('the bridge reads exactly the page frames of the contract', () => {
-  assert.deepEqual(sorted(all(server, /msg\.type === '([a-z_]+)'/g)), sorted(values(PAGE_FRAMES) as Set<string>))
+  // Every page frame is read in pageFrames.mjs, on every message of the socket; server.mjs reads none itself.
+  assert.deepEqual(sorted(all(pageFrames, /msg\.type === '([a-z_]+)'/g)), sorted(values(PAGE_FRAMES) as Set<string>))
+  assert.equal(all(server, /msg\.type === '([a-z_]+)'/g).size, 0)
+  assert.match(server, /socket\.on\(\n\s+'message',\n\s+createPageFrames\(\{\n\s+s,\n\s+send,\n/)
 })
 
 test('the page sends exactly the page frames of the contract', () => {
@@ -112,7 +117,7 @@ test('the page reads every bridge frame of the contract, and nothing else', () =
 })
 
 test('error kinds: the bridge sends only the contract kinds, and the page reads exactly them', () => {
-  const sent = all(server + turns + turnResult + failures + sessionStream, /kind: '(rate|service|[a-z]+)'(?=[,\s}])/g)
+  const sent = all(server + turns + turnResult + failures + sessionStream + pageFrames, /kind: '(rate|service|[a-z]+)'(?=[,\s}])/g)
   for (const k of ['ok', 'failed', 'config', 'cancelled']) sent.delete(k) // internal outcome kinds, not error frames
   assert.deepEqual(sorted(sent), sorted(values(ERROR_KINDS) as Set<string>))
   assert.match(pageBridge, /msg\.kind === 'rate' \|\| msg\.kind === 'service'/)
