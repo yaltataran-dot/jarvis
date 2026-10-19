@@ -199,8 +199,11 @@ test('wiring: the bridge routes the same request here with its own Origin rule, 
   // The gap is still one value for the whole bridge, two seconds, in server.mjs.
   assert.match(srv, /const SCRIBE_TOKEN_GAP_MS = 2000\nlet lastScribeToken = 0\n/)
   // The strict rule rests on the bridge's own originAllowed: no Origin only with JARVIS_ALLOW_NO_ORIGIN.
-  assert.match(srv, /function originAllowed\(origin\) \{\n {2}if \(!origin\) return ALLOW_NO_ORIGIN/)
-  assert.match(srv, /const ALLOW_NO_ORIGIN = process\.env\.JARVIS_ALLOW_NO_ORIGIN === '1'/)
+  // It lives in access.mjs, built once from process.env by server.mjs.
+  const access = readFileSync(new URL('../bridge/access.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(access, /function originAllowed\(origin\) \{\n {4}if \(!origin\) return ALLOW_NO_ORIGIN/)
+  assert.match(access, /const ALLOW_NO_ORIGIN = env\.JARVIS_ALLOW_NO_ORIGIN === '1'/)
+  assert.match(srv, /^const \{ originAllowed, hostAllowed, extraOrigins: EXTRA_ORIGINS, allowNoOrigin: ALLOW_NO_ORIGIN \} = createAccess\(process\.env\)$/m)
   const at = srv.indexOf(route)
   const handler = srv.indexOf('const handleRequest = async (req, res) => {')
   for (const guard of ['if (!hostAllowed(req.headers.host)) {', 'const origin = req.headers.origin', 'if (origin && !originAllowed(origin)) {', 'const cors = corsFor(req)']) {

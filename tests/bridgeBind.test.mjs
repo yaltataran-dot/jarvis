@@ -263,6 +263,48 @@ test('hosts named in JARVIS_ALLOWED_ORIGINS or JARVIS_ALLOWED_HOSTS are served, 
   assert.equal(await handshake({ port: withHosts.port, host: 'box.example', origin: 'http://box.example:15173' }), 101)
 })
 
+test('Origin: the local dev ports are let in; other ports, schemes and hosts are not', async () => {
+  const allowed = ['http://localhost:5173', 'http://localhost:5199', 'http://localhost:4173', 'http://localhost:4199', 'http://127.0.0.1:5180', 'http://[::1]:5173']
+  const refused = [
+    'http://localhost:5172',
+    'http://localhost:5200',
+    'http://localhost:4172',
+    'http://localhost:4200',
+    'http://localhost',
+    'http://localhost:8787',
+    'https://localhost:5173',
+    'http://evil.example:5173',
+    'http://localhost.evil.example:5173',
+    'null',
+    'not a url',
+  ]
+  for (const origin of allowed) assert.equal(await get({ port: plain.port, host: 'localhost', headers: { Origin: origin } }), 200, origin)
+  for (const origin of refused) assert.equal(await get({ port: plain.port, host: 'localhost', headers: { Origin: origin } }), 403, origin)
+})
+
+test('Origin: one named in JARVIS_ALLOWED_ORIGINS is let in, with or without a trailing slash, and only that one', async () => {
+  for (const origin of ['http://box.example:15173', 'http://box.example:15173/', 'http://localhost:5173']) {
+    assert.equal(await get({ port: withHosts.port, host: 'box.example', headers: { Origin: origin } }), 200, origin)
+  }
+  for (const origin of ['http://box.example:15174', 'https://box.example:15173', 'http://box.example']) {
+    assert.equal(await get({ port: withHosts.port, host: 'box.example', headers: { Origin: origin } }), 403, origin)
+  }
+  assert.equal(await get({ port: plain.port, host: 'localhost', headers: { Origin: 'http://box.example:15173' } }), 403, 'not on a bridge that was not told')
+})
+
+test('Origin: no Origin opens no socket unless JARVIS_ALLOW_NO_ORIGIN=1; listed origins are trimmed, and the banner says what is accepted', async () => {
+  assert.match(plain.log(), /accepting local dev origins\n/, 'nothing more on a bridge told nothing')
+  assert.match(withHosts.log(), /accepting local dev origins plus http:\/\/box\.example:15173\n/)
+  const open = await boot({ JARVIS_ALLOW_NO_ORIGIN: '1', JARVIS_ALLOWED_ORIGINS: ' http://a.example:9000/ ,, http://b.example// ' })
+  assert.match(open.log(), /accepting local dev origins plus http:\/\/a\.example:9000, http:\/\/b\.example and clients that send no origin\n/)
+  assert.equal(await handshake({ port: open.port, host: 'localhost' }), 101, 'no Origin, a socket')
+  assert.equal(await handshake({ port: plain.port, host: 'localhost' }), 403, 'and still none by default')
+  assert.equal(await handshake({ port: open.port, host: 'localhost', origin: 'http://evil.example' }), 403, 'a bad Origin is still refused')
+  assert.equal(await handshake({ port: open.port, host: 'a.example:9000', origin: 'http://a.example:9000' }), 101)
+  assert.equal(await get({ port: open.port, host: 'b.example', headers: { Origin: 'http://b.example' } }), 200)
+  assert.equal(await get({ port: open.port, host: 'c.example' }), 403)
+})
+
 test('refusals are logged with the host that was refused, without secrets', async () => {
   await get({ port: plain.port, host: 'logged.example' })
   await waitForLog(plain, /refused http request for host logged\.example/)
