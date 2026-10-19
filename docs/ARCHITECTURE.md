@@ -76,7 +76,7 @@ are the largest remaining extraction (see the plan).
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
-| HTTP routes | `http/tts.mjs` (`POST /tts`; ElevenLabs streamed or Piper, with the fallbacks; key, voices, synthesis and redaction passed in), `http/health.mjs` (`GET /health`; the keys and the engine choice stay in `server.mjs` and are passed in), `http/scribe-token.mjs` (`GET /scribe-token`; strict Origin rule, key and the shared two-second gap stay in `server.mjs` and are passed in; tokens are ElevenLabs' single-use ones, never kept by the bridge), `http/knowledge.mjs` (`POST /knowledge/answer`), `http/calendar.mjs` (`POST /calendar`; what may be written stays with `googleCalendar.mjs`), `http/music.mjs` (`POST /music`; actions and player calls stay with `yandexMusic.mjs`) |
+| HTTP routes | `http/stt.mjs` (`POST /stt`, one recorded segment to ElevenLabs Scribe; not the realtime `/stt-stream` socket), `http/tts.mjs` (`POST /tts`; ElevenLabs streamed or Piper, with the fallbacks; key, voices, synthesis and redaction passed in), `http/health.mjs` (`GET /health`; the keys and the engine choice stay in `server.mjs` and are passed in), `http/scribe-token.mjs` (`GET /scribe-token`; strict Origin rule, key and the shared two-second gap stay in `server.mjs` and are passed in; tokens are ElevenLabs' single-use ones, never kept by the bridge), `http/knowledge.mjs` (`POST /knowledge/answer`), `http/calendar.mjs` (`POST /calendar`; what may be written stays with `googleCalendar.mjs`), `http/music.mjs` (`POST /music`; actions and player calls stay with `yandexMusic.mjs`) |
 
 `server.mjs` is the bridge's composition root. It still holds the other HTTP
 routes and the session protocol, and it keeps everything that comes before
@@ -85,7 +85,7 @@ a moved route only the `cors` headers it built. Routes move one at a time,
 each with tests written against the code while it was still in `server.mjs`
 (`tests/policy.test.mjs`, `tests/httpKnowledge.test.mjs`, `tests/httpCalendar.test.mjs`,
 `tests/httpMusic.test.mjs`, `tests/httpHealth.test.mjs`, `tests/httpScribeToken.test.mjs`,
-`tests/httpTts.test.mjs`).
+`tests/httpTts.test.mjs`, `tests/httpStt.test.mjs`).
 
 ## Contracts (page ↔ bridge)
 
@@ -163,8 +163,8 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   time: `shared/protocol.mjs` (with `shared/protocol.d.mts` and `shared/ui.ts`
   for the page build), `bridge/policy.mjs`, `bridge/http/knowledge.mjs`,
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
-  `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`. `server.mjs` imports
-  the last seven at start-up; without them it does not start.
+  `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`.
+  `server.mjs` imports the last eight at start-up; without them it does not start.
 - `shared/` and `bridge/http/` are new directories on the server. Installing
   new files must create their directories (`install -D -m 644`); the current
   deploy scripts install new files with `install -m 644`, which does not, and
