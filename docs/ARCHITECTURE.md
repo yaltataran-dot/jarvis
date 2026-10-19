@@ -76,7 +76,7 @@ are the largest remaining extraction (see the plan).
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
-| HTTP routes | `http/file.mjs` (`GET /file`; local images only — the image types, the size limit and the roots stay in `server.mjs` and are passed in, the containment check is built there from `withinRootsOf`), `http/stt.mjs` (`POST /stt`, one recorded segment to ElevenLabs Scribe; not the realtime `/stt-stream` socket), `http/tts.mjs` (`POST /tts`; ElevenLabs streamed or Piper, with the fallbacks; key, voices, synthesis and redaction passed in), `http/health.mjs` (`GET /health`; the keys and the engine choice stay in `server.mjs` and are passed in), `http/scribe-token.mjs` (`GET /scribe-token`; strict Origin rule, key and the shared two-second gap stay in `server.mjs` and are passed in; tokens are ElevenLabs' single-use ones, never kept by the bridge), `http/knowledge.mjs` (`POST /knowledge/answer`), `http/calendar.mjs` (`POST /calendar`; what may be written stays with `googleCalendar.mjs`), `http/music.mjs` (`POST /music`; actions and player calls stay with `yandexMusic.mjs`) |
+| HTTP routes | `http/proxy.mjs` (`GET /img`, `GET /media`; remote images, video and audio fetched by the bridge — the SSRF gate and the guarded clients stay in `net.mjs`, shared with `page.mjs`; redaction passed in), `http/file.mjs` (`GET /file`; local images only — the image types, the size limit and the roots stay in `server.mjs` and are passed in, the containment check is built there from `withinRootsOf`), `http/stt.mjs` (`POST /stt`, one recorded segment to ElevenLabs Scribe; not the realtime `/stt-stream` socket), `http/tts.mjs` (`POST /tts`; ElevenLabs streamed or Piper, with the fallbacks; key, voices, synthesis and redaction passed in), `http/health.mjs` (`GET /health`; the keys and the engine choice stay in `server.mjs` and are passed in), `http/scribe-token.mjs` (`GET /scribe-token`; strict Origin rule, key and the shared two-second gap stay in `server.mjs` and are passed in; tokens are ElevenLabs' single-use ones, never kept by the bridge), `http/knowledge.mjs` (`POST /knowledge/answer`), `http/calendar.mjs` (`POST /calendar`; what may be written stays with `googleCalendar.mjs`), `http/music.mjs` (`POST /music`; actions and player calls stay with `yandexMusic.mjs`) |
 
 `server.mjs` is the bridge's composition root. It still holds the other HTTP
 routes and the session protocol, and it keeps everything that comes before
@@ -87,7 +87,10 @@ each with tests written against the code while it was still in `server.mjs`
 `tests/httpMusic.test.mjs`, `tests/httpHealth.test.mjs`, `tests/httpScribeToken.test.mjs`,
 `tests/httpTts.test.mjs`, `tests/httpStt.test.mjs`, `tests/httpFile.test.mjs`; its symlink cases
 need a system that lets the user make links — skipped on Windows without
-Developer Mode, run on Linux).
+Developer Mode, run on Linux; `tests/httpProxy.test.mjs`, whose running-bridge
+cases cover only what the SSRF gate refuses without the network — what happens
+after a target is accepted is tested on the moved handlers with a stand-in
+`openRemote`, the real gate still in front of it).
 
 ## Contracts (page ↔ bridge)
 
@@ -166,7 +169,7 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   for the page build), `bridge/policy.mjs`, `bridge/http/knowledge.mjs`,
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
   `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`,
-  `bridge/http/file.mjs`. `server.mjs` imports the last nine at start-up; without them it does not start.
+  `bridge/http/file.mjs`, `bridge/http/proxy.mjs`. `server.mjs` imports the last ten at start-up; without them it does not start.
 - `shared/` and `bridge/http/` are new directories on the server. Installing
   new files must create their directories (`install -D -m 644`); the current
   deploy scripts install new files with `install -m 644`, which does not, and
