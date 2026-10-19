@@ -77,7 +77,7 @@ test('the bridge sends exactly the bridge frames of the contract', () => {
   assert.match(pageRequests, /send\(\{ type: kind, id, \.\.\.args \}\)/, 'ask(kind) sends the kind as the frame type')
   assert.match(server, /const \{ ask, reply: replied \} = createPageRequests\(\{ socket, send \}\)/)
   assert.match(sessionServers, /jarvis_eyes: visionServer\(ask\)/)
-  assert.match(server, /mcpServers: sessionServers\(\{[^}]*\n {8}ask,\n/)
+  assert.match(server, /mcpServers: sessionServers\(\{[^}]*\n\s+ask,\n/)
   assert.deepEqual(sorted(sent), sorted(values(BRIDGE_FRAMES) as Set<string>))
 })
 

@@ -70,10 +70,10 @@ test('server.mjs builds the set per connection with its own send, the turn queue
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(
     server,
-    /mcpServers: sessionServers\(\{\n {8}configured: MCP_SERVERS,\n {8}send,\n(?: {8}\/\/.*\n)? {8}live: \(\) => turns\.live\(\),\n {8}mayShow: \(\) => s\.turnMayShow,\n {8}ask,\n {8}allowWrites: ALLOW_WRITES,\n {8}pcRoots: PC_ROOTS,\n {8}ym: YM,\n {8}cal: CAL,\n {6}\}\),/,
+    /mcpServers: sessionServers\(\{\n {12}configured: MCP_SERVERS,\n {12}send,\n(?: {12}\/\/.*\n)? {12}live: \(\) => turns\.live\(\),\n {12}mayShow: \(\) => s\.turnMayShow,\n {12}ask,\n {12}allowWrites: ALLOW_WRITES,\n {12}pcRoots: PC_ROOTS,\n {12}ym: YM,\n {12}cal: CAL,\n {10}\}\),/,
   )
-  // Inside openSession, so a new set for every session, as before.
-  const open = server.indexOf('const openSession = (resume) => query({')
-  const end = server.indexOf('/** A new agent session, live from now on', open)
-  assert.ok(server.indexOf('mcpServers: sessionServers({', open) > open && server.indexOf('mcpServers: sessionServers({', open) < end)
+  // Inside the session's `open` (sessionLifecycle.mjs calls it for every session), so a new set each time, as before.
+  const open = server.indexOf('    open: (resume) =>\n      query({')
+  const end = server.indexOf('    pump: (q, gen) => pump(q, gen),', open)
+  assert.ok(open > 0 && server.indexOf('mcpServers: sessionServers({', open) > open && server.indexOf('mcpServers: sessionServers({', open) < end)
 })

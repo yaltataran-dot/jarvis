@@ -112,7 +112,10 @@ test('wiring: the bridge resumes only before a question, ends a stale socket, an
   assert.match(src, /if \(!existsSync\(transcriptPath\(dir, homedir\(\), msg\.id\)\)\) verdict = \{ ok: false, reason: 'no-transcript' \}/, 'no transcript, no resume')
   assert.match(src, /void Promise\.resolve\(s\.session\?\.initializationResult\?\.\(\)\)\.then\(/, '"resumed" only once the session has started')
   assert.match(src, /if \(!s\.asked\) replace\(null\)\n {10}send\(\{ type: 'resumed', ok: false \}\)/, 'a session that will not start falls back to a fresh one')
-  assert.match(src, /!s\.closed && !resume\) \{/, 'a failed resume does not set the login aside')
+  // Sessions are started, and set aside on a failed start, in sessionLifecycle.mjs.
+  const life = readFileSync(new URL('../bridge/sessionLifecycle.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(life, /!s\.closed && !resume\) \{/, 'a failed resume does not set the login aside')
+  assert.match(src, /const \{\n {4}startSession,\n {4}switchTo,\n {4}restart: restartSession,\n {4}replace,\n {2}\} = createSessionLifecycle\(\{/, 'the resume handler uses the session\'s own replace')
   assert.match(src, /if \(msg\.type === 'ask' && typeof msg\.text === 'string'\) \{\n {6}s\.asked = true/)
   assert.match(src, /if \(s\.sessionId\) RESUMABLE\.release\(s\.sessionId, owner\)/, 'released on close')
   // The resume handler starts a session; it does not hand anything to turns.

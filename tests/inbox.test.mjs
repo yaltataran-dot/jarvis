@@ -80,8 +80,11 @@ test('server.mjs: one inbox per session, closed before it is replaced, read as n
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   // The inbox lives on the socket's state, `s` (socketState.mjs).
   assert.match(server, /const item = ch\.next\(\) \?\? \(await ch\.wait\(\)\)\n {6}if \(s\.closed \|\| ch\.closed \|\| item == null\) return/)
-  assert.equal(server.match(/s\.chan\.close\(\)\n\s+s\.chan = createInbox\(\)/g)?.length, 3, 'switch login, restart, resume')
-  assert.equal(server.match(/s\.chan\.close\(\)/g)?.length, 5, 'and on a dead stream and a closed socket')
+  // A session replaced closes its inbox first (sessionLifecycle.mjs: switch login, restart, resume).
+  const life = readFileSync(new URL('../bridge/sessionLifecycle.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.equal(life.match(/s\.chan\.close\(\)\n\s+s\.chan = createInbox\(\)/g)?.length, 3, 'switch login, restart, resume')
+  assert.equal(life.match(/s\.chan\.close\(\)/g)?.length, 3)
+  assert.equal(server.match(/s\.chan\.close\(\)/g)?.length, 2, 'and on a dead stream and a closed socket')
   assert.equal(server.match(/s\.chan\.put\(/g)?.length, 1, 'only primary.hand puts a question in')
   assert.doesNotMatch(server, /chan\.(inbox|deliver)|chan\.closed = /)
   const state = readFileSync(new URL('../bridge/socketState.mjs', import.meta.url), 'utf8')

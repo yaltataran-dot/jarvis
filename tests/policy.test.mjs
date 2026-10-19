@@ -99,7 +99,10 @@ test('wiring: the bridge builds one policy from its writes switch and uses it at
   assert.match(server, /const ALLOW_WRITES = WRITES\.allowed/)
   assert.match(server, /disallowedTools: DISALLOWED_BUILTINS,/, 'taken from the model through the SDK')
   // The last gate: the policy's own canUseTool, deciding with the same decideTool.
-  assert.match(server, /^ {6}canUseTool,$/m, 'the last gate')
+  // Handed to the session's options (sessionLifecycle.mjs), which pass it to the SDK as canUseTool.
+  assert.match(server, /options: sessionOptions\(\{[\s\S]*?\n {10}canUseTool,\n {8}\}\),/, 'the last gate')
+  const life = readFileSync(new URL('../bridge/sessionLifecycle.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(life, /^ {4}canUseTool,\n {2}\}\n\}/m)
   const policy = readFileSync(new URL('../bridge/policy.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(policy, /const canUseTool = async \(toolName\) => \{\n\s+const ok = decideTool\(toolName\)/)
   // The HUD announces only what may run: the badge (toolBadge.mjs) asks the same decideTool, and
