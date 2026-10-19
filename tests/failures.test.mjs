@@ -2,7 +2,19 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { allLoginsLimitedMessage, describeFailure, isAuthFailure, isRateLimit, rateLimitMessage, rateLimitReset, resultFailures, turnFailed } from '../bridge/failures.mjs'
+import {
+  allLoginsLimitedMessage,
+  describeFailure,
+  fallbackDownMessage,
+  isAuthFailure,
+  isRateLimit,
+  loginsUnavailableMessage,
+  noLoginFrame,
+  rateLimitMessage,
+  rateLimitReset,
+  resultFailures,
+  turnFailed,
+} from '../bridge/failures.mjs'
 
 test('an API error reported as a "successful" result is a failure', () => {
   // The shape that used to reach the page as an ordinary, unspoken answer.
@@ -182,4 +194,56 @@ test('a turn that ends badly, by result subtype: the sentences as server.mjs had
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(server, /^const RESULT_FAILURES = resultFailures\(LANG\)$/m)
   assert.equal(server.match(/RESULT_FAILURES\[msg\.subtype\] \?\? RESULT_FAILURES\.default/g)?.length, 2)
+})
+
+test('more than two logins at their limit: "all", not "both"; two is unchanged', () => {
+  assert.equal(allLoginsLimitedMessage('2:00', 'ru', 2), 'Оба аккаунта Claude недоступны до 2:00. Команды без модели работают.')
+  assert.equal(allLoginsLimitedMessage('2:00', 'ru', 3), 'Все аккаунты Claude недоступны до 2:00. Команды без модели работают.')
+  assert.equal(allLoginsLimitedMessage(null, 'ru', 3), 'Все аккаунты Claude недоступны. Попробуйте чуть позже.')
+  assert.equal(allLoginsLimitedMessage('2:00', 'en', 3), 'All Claude accounts are unavailable until 2:00. Commands that need no model still work.')
+  assert.equal(allLoginsLimitedMessage(null, 'en'), 'Both Claude accounts are unavailable. Try again a little later.')
+})
+
+test('every login held but not all at the limit: "unavailable", never "the limit"', () => {
+  assert.equal(loginsUnavailableMessage(null), 'Claude временно недоступен: ни один аккаунт сейчас не принимает запросы. Попробуйте чуть позже.')
+  assert.equal(loginsUnavailableMessage('2:00'), 'Claude недоступен до 2:00: ни один аккаунт сейчас не принимает запросы. Команды без модели работают.')
+  assert.equal(loginsUnavailableMessage(null, 'en'), 'Claude is unavailable for now: none of its accounts can take a question. Try again a little later.')
+  for (const m of [loginsUnavailableMessage(null), loginsUnavailableMessage('2:00', 'en')]) assert.doesNotMatch(m, /[Лл]имит|limit/)
+})
+
+test('the frame for a question no login takes: the limit for one login, all at their limit, or one still free; "service" otherwise', () => {
+  const rate = (clock, message) => ({ type: 'error', kind: 'rate', resetAt: clock, message })
+  // One login: the limit, as it always was, whatever holds it.
+  assert.deepEqual(noLoginFrame({ clock: '2:00', blocked: { limited: true }, logins: 1 }), rate('2:00', rateLimitMessage('2:00')))
+  // A login still free (the turn is moving on, or said so after acting): the limit of this one.
+  assert.deepEqual(noLoginFrame({ clock: '2:00', blocked: null, logins: 3 }), rate('2:00', rateLimitMessage('2:00')))
+  // Every login at its limit.
+  assert.deepEqual(noLoginFrame({ clock: '2:00', blocked: { limited: true }, logins: 2 }), rate('2:00', allLoginsLimitedMessage('2:00')))
+  assert.deepEqual(noLoginFrame({ clock: null, blocked: { limited: true }, logins: 3, lang: 'en' }), rate(null, allLoginsLimitedMessage(null, 'en', 3)))
+  // Every login held, some only set aside: not a limit, so the page does not say one.
+  assert.deepEqual(noLoginFrame({ clock: null, blocked: { limited: false }, logins: 3 }), {
+    type: 'error',
+    kind: 'service',
+    resetAt: null,
+    message: loginsUnavailableMessage(null),
+  })
+})
+
+test('the fallback could not answer either: "the limit" by default, "unavailable" when the logins are only set aside', () => {
+  assert.equal(fallbackDownMessage('budget'), fallbackDownMessage('budget', 'ru', { limited: true }))
+  assert.equal(fallbackDownMessage('budget', 'ru', { limited: false }), 'Claude временно недоступен, а дневной бюджет резервного канала исчерпан. Команды без модели работают.')
+  assert.equal(fallbackDownMessage('auth', 'en', { limited: false }), 'Claude is unavailable for now, and the fallback channel did not accept its key. Commands that need no model still work.')
+})
+
+test('server.mjs builds both limit frames, after a 429 and while held, from noLoginFrame, and words the fallback by what holds the logins', () => {
+  const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(server, /const noLogin = \(clock, blocked\) => noLoginFrame\(\{ clock, blocked, logins: ACCOUNTS\.labels\(\)\.length, lang: LANG \}\)/)
+  assert.match(server, /frame: noLogin\(clock, blocked\),/)
+  assert.match(server, /return noLogin\(blocked\.clock, blocked\)/)
+  assert.match(server, /fallbackDown: \(kind\) => fallbackDownMessage\(kind, LANG, \{ limited: ACCOUNTS\.blocked\(\)\?\.limited !== false \}\),/)
+  assert.doesNotMatch(server, /limitMessage\(/)
+  // The hold times are as they were.
+  assert.match(server, /const LIMIT_PAUSE_FALLBACK_MS = 60_000\n/)
+  assert.match(server, /const LIMIT_PAUSE_MAX_MS = 6 \* 60 \* 60_000\n/)
+  assert.match(server, /const ACCOUNT_DOWN_MS = 15 \* 60_000\n/)
 })

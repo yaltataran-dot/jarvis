@@ -167,7 +167,11 @@ like any code in 4000–4099): `4010` audio blocked, `4011` capture failed,
 
 - A turn fails with an `Error` (a fault: red core) or a `ServiceError` whose
   `kind` is `rate` (usage limit), `service` (outside trouble) or `link` (the
-  connection went under the question; shown as part of the reconnect).
+  connection went under the question; shown as part of the reconnect). With
+  several Claude logins, `rate` means every login is at its limit (or the only
+  one is); when every login is held but some only because they refused
+  themselves or would not start, the frame is `service` and says Claude is
+  unavailable, not limited (`noLoginFrame` in `failures.mjs`).
 - Connection states: `open`, `lost`, `resumed`, `reconnected`, `down`
   (`bridge.ts`), shown through `linkStatus.ts` as `ok` / `reconnecting` / `down`.
 

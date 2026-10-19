@@ -137,16 +137,49 @@ export function rateLimitMessage(clock, lang = 'ru') {
     : RU.rate
 }
 
-/** Both Claude logins held off (accounts.mjs): the same sentence, saying it is both. */
-export function allLoginsLimitedMessage(clock, lang = 'ru') {
+/**
+ * Every Claude login held off for its limit (accounts.mjs): the same sentence,
+ * saying it is both of them — or all, when there are more than two.
+ */
+export function allLoginsLimitedMessage(clock, lang = 'ru', logins = 2) {
+  const all = logins > 2
+  if (lang === 'en') {
+    const who = all ? 'All Claude accounts are' : 'Both Claude accounts are'
+    return clock ? `${who} unavailable until ${clock}. Commands that need no model still work.` : `${who} unavailable. Try again a little later.`
+  }
+  const who = all ? 'Все аккаунты Claude недоступны' : 'Оба аккаунта Claude недоступны'
+  return clock ? `${who} до ${clock}. Команды без модели работают.` : `${who}. Попробуйте чуть позже.`
+}
+
+/**
+ * Every Claude login held off, but not every one for its limit: some refused
+ * themselves or would not start ('down'). Not called a limit, because it is
+ * not one; the time, when there is one, is when the first of them is back.
+ */
+export function loginsUnavailableMessage(clock, lang = 'ru') {
   if (lang === 'en') {
     return clock
-      ? `Both Claude accounts are unavailable until ${clock}. Commands that need no model still work.`
-      : 'Both Claude accounts are unavailable. Try again a little later.'
+      ? `Claude is unavailable until ${clock}: none of its accounts can take a question. Commands that need no model still work.`
+      : 'Claude is unavailable for now: none of its accounts can take a question. Try again a little later.'
   }
   return clock
-    ? `Оба аккаунта Claude недоступны до ${clock}. Команды без модели работают.`
-    : 'Оба аккаунта Claude недоступны. Попробуйте чуть позже.'
+    ? `Claude недоступен до ${clock}: ни один аккаунт сейчас не принимает запросы. Команды без модели работают.`
+    : 'Claude временно недоступен: ни один аккаунт сейчас не принимает запросы. Попробуйте чуть позже.'
+}
+
+/**
+ * The error frame for a question no login will take now. `blocked` is
+ * accounts.blocked() — null while some login is free — and `logins` how many
+ * there are. One login, or one still free: the limit, as before. Every login
+ * at its limit: the limit, said for all of them. Every login held, but not all
+ * for the limit: kind 'service', so the page does not announce a limit.
+ *
+ * @param {{ clock: string | null, blocked: { limited: boolean } | null, logins: number, lang?: string }} o
+ */
+export function noLoginFrame({ clock, blocked, logins, lang = 'ru' }) {
+  if (!blocked || logins <= 1) return { type: 'error', kind: 'rate', resetAt: clock, message: rateLimitMessage(clock, lang) }
+  if (blocked.limited) return { type: 'error', kind: 'rate', resetAt: clock, message: allLoginsLimitedMessage(clock, lang, logins) }
+  return { type: 'error', kind: 'service', resetAt: clock, message: loginsUnavailableMessage(clock, lang) }
 }
 
 /**
@@ -178,11 +211,13 @@ const FALLBACK_EN = {
 }
 
 /** The limit is reached and the fallback could not take the question either. */
-export function fallbackDownMessage(kind, lang = 'ru') {
+export function fallbackDownMessage(kind, lang = 'ru', { limited = true } = {}) {
   if (lang === 'en') {
-    return `The Claude usage limit is reached, and ${FALLBACK_EN[kind] ?? FALLBACK_EN.service}. Commands that need no model still work.`
+    const head = limited ? 'The Claude usage limit is reached' : 'Claude is unavailable for now'
+    return `${head}, and ${FALLBACK_EN[kind] ?? FALLBACK_EN.service}. Commands that need no model still work.`
   }
-  return `Лимит Claude исчерпан, а ${FALLBACK_RU[kind] ?? FALLBACK_RU.service}. Команды без модели работают.`
+  const head = limited ? 'Лимит Claude исчерпан' : 'Claude временно недоступен'
+  return `${head}, а ${FALLBACK_RU[kind] ?? FALLBACK_RU.service}. Команды без модели работают.`
 }
 
 /**

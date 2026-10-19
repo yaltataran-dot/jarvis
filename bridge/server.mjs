@@ -31,13 +31,12 @@ import { effortFor } from './effort.mjs'
 import { asidesFrom, createAsideLedger, createBlockJoin, formatAsides, withAside } from './turnText.mjs'
 import { asksToSee } from './visual.mjs'
 import {
-  allLoginsLimitedMessage,
   describeFailure,
   fallbackDownMessage,
   isAuthFailure,
   isRateLimit,
   limitMidTurnMessage,
-  rateLimitMessage,
+  noLoginFrame,
   rateLimitReset,
   resultFailures,
   turnFailed,
@@ -228,9 +227,12 @@ const PRIMARY_LOGIN_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.cla
 const ACCOUNTS = createAccounts({ backupDirs: backupLoginDirs(process.env, { primaryDir: PRIMARY_LOGIN_DIR }) })
 if (ACCOUNTS.switchable()) console.log(`[jarvis] claude logins: ${ACCOUNTS.labels().join(', ')}`)
 
-/** The limit's sentence; with two logins and both held off, it says so. */
-const limitMessage = (clock, everyLogin) =>
-  (everyLogin && ACCOUNTS.switchable() ? allLoginsLimitedMessage : rateLimitMessage)(clock, LANG)
+/**
+ * The frame for a question no login takes now: the limit, for one login or all
+ * of them at it; "unavailable" (kind 'service') when some are only set aside
+ * (failures.mjs).
+ */
+const noLogin = (clock, blocked) => noLoginFrame({ clock, blocked, logins: ACCOUNTS.labels().length, lang: LANG })
 
 // Where the computer tools may work (settings.mjs).
 const PC_ROOTS = pcRoots(process.env, PROJECT_ROOT)
@@ -1087,7 +1089,7 @@ wss.on('connection', (socket, req) => {
               const clock = blocked ? blocked.clock : (reset?.clock ?? null)
               outcome = {
                 kind: 'rate',
-                frame: { type: 'error', kind: 'rate', resetAt: clock, message: limitMessage(clock, Boolean(blocked)) },
+                frame: noLogin(clock, blocked),
               }
             } else {
               const described = describeFailure(msg, turnApiError, LANG)
@@ -1197,7 +1199,8 @@ wss.on('connection', (socket, req) => {
   const turns = createTurns({
     send,
     say: {
-      fallbackDown: (kind) => fallbackDownMessage(kind, LANG),
+      // Not "the limit" when what holds every login off is not only the limit.
+      fallbackDown: (kind) => fallbackDownMessage(kind, LANG, { limited: ACCOUNTS.blocked()?.limited !== false }),
       limitMidTurn: () => limitMidTurnMessage(LANG),
     },
     waitCapMs: TURN_WAIT_CAP_MS,
@@ -1262,16 +1265,16 @@ wss.on('connection', (socket, req) => {
         switchTo(to, `${account} limited`)
         return to
       },
-      // Every login's limit is reached and none has lifted yet: no request against them.
+      // Every login held off — at its limit, or set aside — and none back yet: no request against them.
       pausedFrame() {
         const blocked = ACCOUNTS.blocked()
         if (!blocked) return null
         console.log(
-          `[jarvis] usage limit until ${new Date(blocked.until).toLocaleTimeString()}` +
+          `[jarvis] ${blocked.limited ? 'usage limit' : 'no login free'} until ${new Date(blocked.until).toLocaleTimeString()}` +
             (ACCOUNTS.switchable() ? ' on every login' : '') +
             (FALLBACK ? ' — question goes to the fallback' : ' — question not sent'),
         )
-        return { type: 'error', kind: 'rate', resetAt: blocked.clock, message: limitMessage(blocked.clock, true) }
+        return noLogin(blocked.clock, blocked)
       },
     },
     fallback: FALLBACK && {
