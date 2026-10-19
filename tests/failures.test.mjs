@@ -238,13 +238,14 @@ test('the fallback could not answer either: "the limit" by default, "unavailable
   assert.equal(fallbackDownMessage('auth', 'en', { limited: false }), 'Claude is unavailable for now, and the fallback channel did not accept its key. Commands that need no model still work.')
 })
 
-test('server.mjs builds both limit frames, after a 429 and while held, from noLoginFrame, and words the fallback by what holds the logins', () => {
+test('server.mjs builds both limit frames, after a 429 and while held, from noLoginFrame, and words the fallback by the frame it goes in', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(server, /const noLogin = \(clock, blocked\) => noLoginFrame\(\{ clock, blocked, logins: ACCOUNTS\.labels\(\)\.length, lang: LANG \}\)/)
   const result = readFileSync(new URL('../bridge/turnResult.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(result, /frame: noLogin\(clock, blocked\),/, 'after a 429 (turnResult.mjs)')
   assert.match(server, /return noLogin\(blocked\.clock, blocked\)/, 'while held (pausedFrame)')
-  assert.match(server, /fallbackDown: \(kind\) => fallbackDownMessage\(kind, LANG, \{ limited: ACCOUNTS\.blocked\(\)\?\.limited !== false \}\),/)
+  // Worded by the frame it goes in (turns.mjs passes it), not by the logins' state when the fallback gave up.
+  assert.match(server, /fallbackDown: \(kind, frame\) => fallbackDownMessage\(kind, LANG, \{ limited: frame\?\.kind !== 'service' \}\),/)
   assert.doesNotMatch(server, /limitMessage\(/)
   // The hold times are as they were.
   assert.match(result, /export const LIMIT_PAUSE_FALLBACK_MS = 60_000\n/)

@@ -737,6 +737,31 @@ test('three logins: without maxSwitches (the wiring as it was) a question still 
   assert.deepEqual(sent, [{ ...RATE.frame, ask: 'a1' }])
 })
 
+test('the fallback could not answer: fallbackDown is given the very frame it words, "service" or the limit', async () => {
+  const asked = []
+  const sent = []
+  const make = (frame, fallback) =>
+    createTurns({
+      send: (f) => sent.push(f),
+      say: { fallbackDown: (k, f) => (asked.push([k, f]), `${f.kind}:${k}`), limitMidTurn: () => 'mid' },
+      primary: { hand: () => {}, interrupt: () => {}, restart: () => {}, pausedFrame: () => frame },
+      fallback,
+      timers: manualTimers(),
+    })
+  // Every login held, some only set aside: the frame is "service", and so is its sentence.
+  const setAside = { type: 'error', kind: 'service', resetAt: null, message: 'unavailable' }
+  make(setAside, fakeFallback({ ready: { ok: false, kind: 'budget' } })).ask('a1', item('x'))
+  assert.deepEqual(asked, [['budget', setAside]])
+  assert.deepEqual(sent.at(-1), { ...setAside, message: 'service:budget', ask: 'a1' })
+  // The limit: the fallback fails part way, and is told it was the limit's frame.
+  const fb = fakeFallback()
+  make(RATE.frame, fb).ask('a2', item('y'))
+  fb.calls[0].reject(Object.assign(new Error('x'), { kind: 'network' }))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(asked.at(-1), ['network', RATE.frame])
+  assert.deepEqual(sent.at(-1), { ...RATE.frame, message: 'rate:network', ask: 'a2' })
+})
+
 test('server.mjs wires the logins as loginRig does: one try per other login, the login it is on, the next untried one', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(server, /^ {4}maxSwitches: ACCOUNTS\.labels\(\)\.length - 1,$/m)

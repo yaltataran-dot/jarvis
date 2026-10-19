@@ -1059,8 +1059,8 @@ wss.on('connection', (socket, req) => {
   const turns = createTurns({
     send,
     say: {
-      // Not "the limit" when what holds every login off is not only the limit.
-      fallbackDown: (kind) => fallbackDownMessage(kind, LANG, { limited: ACCOUNTS.blocked()?.limited !== false }),
+      // Worded as the frame it goes in: not "the limit" on the frame for logins set aside.
+      fallbackDown: (kind, frame) => fallbackDownMessage(kind, LANG, { limited: frame?.kind !== 'service' }),
       limitMidTurn: () => limitMidTurnMessage(LANG),
     },
     waitCapMs: TURN_WAIT_CAP_MS,

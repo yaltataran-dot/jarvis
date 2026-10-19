@@ -59,7 +59,10 @@
  *   answer(a: { item, history, signal: AbortSignal, onText(d: string): void }): Promise<{ text: string, costUsd?: number }>,
  * }} [o.fallback]
  * @param {(frame: object) => void} o.send
- * @param {{ fallbackDown(kind: string): string, limitMidTurn(): string }} o.say
+ * @param {{ fallbackDown(kind: string, frame: object): string, limitMidTurn(): string }} o.say
+ *   `fallbackDown` is given the frame it words: the limit's, or (kind
+ *   'service') the one for logins set aside, so the sentence says the same as
+ *   the frame however the logins have changed while the fallback was asked.
  * @param {(event: string, turn?: object, detail?: string) => void} [o.log]
  * @param {number} [o.waitCapMs]  How long a stopped turn may take to finish.
  * @param {number} [o.maxSwitches]  How many other logins one question may be asked on.
@@ -173,7 +176,7 @@ export function createTurns({
     const ready = fallback.ready()
     if (!ready.ok) {
       log('fallback-skipped', turn, ready.kind)
-      tag(turn, ready.kind === 'config' ? limitFrame : { ...limitFrame, message: say.fallbackDown(ready.kind) })
+      tag(turn, ready.kind === 'config' ? limitFrame : { ...limitFrame, message: say.fallbackDown(ready.kind, limitFrame) })
       return finish(turn)
     }
     log('fallback', turn)
@@ -195,7 +198,7 @@ export function createTurns({
       if (kind !== 'cancelled' && current === turn) {
         // Still the limit's frame — the page says the limit aloud — with the
         // reason the fallback could not take it on the screen.
-        tag(turn, { ...limitFrame, message: say.fallbackDown(kind) })
+        tag(turn, { ...limitFrame, message: say.fallbackDown(kind, limitFrame) })
       }
       finish(turn)
     }
