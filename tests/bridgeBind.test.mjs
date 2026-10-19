@@ -42,20 +42,107 @@ async function boot(extraEnv = {}) {
   let log = ''
   child.stdout.on('data', (d) => (log += d))
   child.stderr.on('data', (d) => (log += d))
+  // Kept for the child's whole life: an 'error' with no listener would throw in
+  // the test process. Before the bridge is ready, boot() also rejects on it.
+  child.on('error', (e) => (log += `\n[test] child process error: ${e.message}\n`))
   running.push(child)
+  const alive = () => child.exitCode === null && child.signalCode === null
+  // Ready means: the "listening" line, then a real GET /health answered 200 with
+  // { ok: true } — while the process is still running, before and after.
   await new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`bridge did not start:\n${log}`)), 20000)
-    const poll = setInterval(() => {
-      if (/bridge listening/.test(log)) {
-        clearInterval(poll)
-        clearTimeout(t)
-        resolve()
+    let settled = false
+    let probing = false
+    let probe = null
+    let lastProbe = 'none yet'
+    const settle = (err) => {
+      if (settled) return
+      settled = true
+      clearInterval(poll)
+      clearTimeout(deadline)
+      child.off('exit', onExit)
+      child.off('error', onError)
+      probe?.destroy()
+      if (err) reject(err)
+      else resolve()
+    }
+    const onExit = (code, signal) => settle(new Error(`bridge exited before it was ready (code ${code}, signal ${signal}):\n${log}`))
+    const onError = (e) => settle(new Error(`bridge could not be started: ${e.message}\n${log}`))
+    const deadline = setTimeout(() => settle(new Error(`bridge was not ready within 20 s (last /health probe: ${lastProbe}):\n${log}`)), 20000)
+    const poll = setInterval(async () => {
+      if (settled || probing || !/bridge listening/.test(log) || !alive()) return
+      probing = true
+      try {
+        const { status, body } = await health(port, (req) => (probe = req))
+        lastProbe = `${status} ${body.slice(0, 200)}`
+        let ok = false
+        try {
+          ok = JSON.parse(body)?.ok === true
+        } catch {
+          ok = false
+        }
+        if (status === 200 && ok && alive()) settle()
+      } catch (e) {
+        // ECONNREFUSED and the like: not ready yet; tried again until the deadline.
+        lastProbe = e.code ?? e.message
+      } finally {
+        probe = null
+        probing = false
       }
     }, 50)
-    child.once('exit', (code) => reject(new Error(`bridge exited ${code}:\n${log}`)))
+    child.on('exit', onExit)
+    child.on('error', onError)
   })
-  return { port, log: () => log }
+  return { port, child, log: () => log }
 }
+
+/** One GET /health with Host: localhost; resolves with the status and the body. */
+const health = (port, onRequest) =>
+  new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/health', method: 'GET', headers: { Host: 'localhost' } }, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (d) => (body += d))
+      res.on('end', () => resolve({ status: res.statusCode, body }))
+      res.on('error', reject)
+    })
+    req.setTimeout(2000, () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
+    req.end()
+    onRequest(req)
+  })
+
+/**
+ * Waits until the bridge's log matches `re`. stdout and stderr are separate
+ * pipes, so a line can arrive after the response that caused it, or after a
+ * line written on the other stream before it.
+ */
+const waitForLog = (bridge, re, ms = 5000) =>
+  new Promise((resolve, reject) => {
+    if (re.test(bridge.log())) return resolve()
+    const { child } = bridge
+    const check = () => {
+      if (re.test(bridge.log())) done()
+    }
+    const onExit = () => {
+      // Output written just before exit can still be in the pipe; one last look.
+      setImmediate(() => done(re.test(bridge.log()) ? undefined : new Error(`bridge exited before logging ${re}:\n${bridge.log()}`)))
+    }
+    const t = setTimeout(() => done(new Error(`no log line matching ${re} within ${ms} ms:\n${bridge.log()}`)), ms)
+    let finished = false
+    const done = (err) => {
+      if (finished) return
+      finished = true
+      clearTimeout(t)
+      child.stdout.off('data', check)
+      child.stderr.off('data', check)
+      child.off('exit', onExit)
+      if (err) reject(err)
+      else resolve()
+    }
+    child.stdout.on('data', check)
+    child.stderr.on('data', check)
+    child.once('exit', onExit)
+  })
 
 /** GET with an exact Host header (fetch cannot set one). */
 const get = ({ port, host, path = '/health', headers = {}, address = '127.0.0.1' }) =>
@@ -178,6 +265,7 @@ test('hosts named in JARVIS_ALLOWED_ORIGINS or JARVIS_ALLOWED_HOSTS are served, 
 
 test('refusals are logged with the host that was refused, without secrets', async () => {
   await get({ port: plain.port, host: 'logged.example' })
+  await waitForLog(plain, /refused http request for host logged\.example/)
   assert.match(plain.log(), /refused http request for host logged\.example/)
 })
 
@@ -187,6 +275,8 @@ test('a backup login directory is taken by label, and a missing one turns the ba
   const withBackup = await boot({ JARVIS_CLAUDE_BACKUP_DIR: backupDir })
   assert.match(withBackup.log(), /claude logins: primary, backup/)
   const missing = await boot({ JARVIS_CLAUDE_BACKUP_DIR: join(home, 'no-such-login') })
+  // A warning on stderr; "listening" came on stdout and may have won the race.
+  await waitForLog(missing, /JARVIS_CLAUDE_BACKUP_DIR is not a directory — backup login off/)
   assert.match(missing.log(), /JARVIS_CLAUDE_BACKUP_DIR is not a directory — backup login off/)
   assert.doesNotMatch(missing.log(), /claude logins/)
   // The directory is the user's: neither path reaches the log.
