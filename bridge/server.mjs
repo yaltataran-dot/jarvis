@@ -25,8 +25,7 @@ import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { readFile, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { renderPage } from './page.mjs'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
@@ -56,6 +55,7 @@ import { HEALTH_PATH, healthRequest } from './http/health.mjs'
 import { SCRIBE_TOKEN_PATH, scribeTokenRequest } from './http/scribe-token.mjs'
 import { TTS_PATH, ttsRequest } from './http/tts.mjs'
 import { STT_HTTP_PATH, sttRequest } from './http/stt.mjs'
+import { FILE_PATH_PREFIX, fileRequest, withinRootsOf } from './http/file.mjs'
 import { musicServer } from './music.mjs'
 import { createGoogleCalendar } from './googleCalendar.mjs'
 import { CALENDAR_PATH, calendarRequest } from './http/calendar.mjs'
@@ -808,11 +808,7 @@ const FILE_ROOTS = [
 })
 
 /** True when `real` sits inside one of the roots, after both are resolved. */
-const withinRoots = (real) =>
-  FILE_ROOTS.some((root) => {
-    const rel = relative(root, real)
-    return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
-  })
+const withinRoots = withinRootsOf(FILE_ROOTS)
 
 // ---------------------------------------------------------------------------
 
@@ -1016,46 +1012,8 @@ const handleRequest = async (req, res) => {
   // Serve local image files to the page. Screenshots and generated art land on
   // disk as absolute paths, and a page served over http can't read file:// —
   // so the bridge, which can, hands them over.
-  if (req.method === 'GET' && req.url?.startsWith('/file?')) {
-    const asked = new URL(req.url, 'http://x').searchParams.get('path') ?? ''
-    // Resolve symlinks BEFORE judging anything. A name ending in .png can be a
-    // link pointing at /etc/hosts, and checking the suffix the caller supplied
-    // would wave that straight through — which is exactly how this endpoint
-    // used to serve the contents of arbitrary system files.
-    let real = null
-    try {
-      if (isAbsolute(asked)) real = await realpath(asked)
-    } catch {
-      real = null
-    }
-    const dot = real ? real.lastIndexOf('.') : -1
-    const ext = dot === -1 ? '' : real.slice(dot).toLowerCase()
-    // Images only, absolute paths only, and only under roots we expect things
-    // to be written to. This endpoint exists to show pictures, not to be a
-    // general file read for whatever the model — or another page — asks for.
-    if (!real || !Object.hasOwn(IMAGE_TYPES, ext) || !withinRoots(real)) {
-      res.writeHead(400, cors)
-      return res.end('images only')
-    }
-    try {
-      const info = await stat(real)
-      if (!info.isFile() || info.size > MAX_FILE_BYTES) {
-        res.writeHead(413, cors)
-        return res.end('too large')
-      }
-      // Asynchronous because this process is also pumping the agent's token
-      // stream; a synchronous read of a large screenshot stalls the voice.
-      const body = await readFile(real)
-      res.writeHead(200, {
-        ...cors,
-        'content-type': IMAGE_TYPES[ext],
-        'x-content-type-options': 'nosniff',
-      })
-      return res.end(body)
-    } catch {
-      res.writeHead(404, cors)
-      return res.end('not found')
-    }
+  if (req.method === 'GET' && req.url?.startsWith(FILE_PATH_PREFIX)) {
+    return fileRequest(req, res, { cors, imageTypes: IMAGE_TYPES, maxBytes: MAX_FILE_BYTES, withinRoots })
   }
 
   // Remote images, fetched here so the page never talks to the wider web. The
