@@ -52,6 +52,7 @@ import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
 import { createYandexMusic } from './yandexMusic.mjs'
 import { MUSIC_PATH, musicRequest } from './http/music.mjs'
+import { HEALTH_PATH, healthRequest } from './http/health.mjs'
 import { musicServer } from './music.mjs'
 import { createGoogleCalendar } from './googleCalendar.mjs'
 import { CALENDAR_PATH, calendarRequest } from './http/calendar.mjs'
@@ -990,33 +991,9 @@ const handleRequest = async (req, res) => {
     return res.end()
   }
 
-  if (req.method === 'GET' && req.url === '/health') {
-    // The browser reads this once at boot to decide which voice engine to use.
-    // Both premium paths ride the same ElevenLabs key, so both flags track it:
-    // with a key the app transcribes with Scribe and speaks with ElevenLabs;
-    // without one it falls back to the browser's own recogniser and voice, so a
-    // student with nothing configured still has a working assistant.
-    //
-    // Speech has a free middle tier: a local Piper voice, when one is
-    // installed, replaces the browser voice without any key. Recognition does
-    // not — Piper only speaks — so `stt` still tracks the key alone.
-    const eleven = Boolean(elevenKey())
-    const voices = eleven ? [] : piperVoices(LANG)
-    const ttsEngine = eleven ? 'elevenlabs' : voices.length ? 'piper' : null
-    const realtime = sttEngine()
-    res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-    return res.end(
-      JSON.stringify({
-        ok: true,
-        tts: Boolean(ttsEngine),
-        stt: eleven,
-        sttRealtime: realtime !== null,
-        sttEngine: realtime,
-        ttsEngine,
-        voices,
-        voice: ttsEngine === 'piper' ? defaultPiperVoice(LANG) : null,
-      }),
-    )
+  // What the bridge can do for the page's voice, read at boot (http/health.mjs).
+  if (req.method === 'GET' && req.url === HEALTH_PATH) {
+    return healthRequest(req, res, { cors, lang: LANG, elevenKey, sttEngine, piperVoices, defaultPiperVoice })
   }
 
   // A single-use token for the browser's realtime Scribe socket. The API key
