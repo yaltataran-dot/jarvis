@@ -7,7 +7,7 @@ import { createInbox } from '../bridge/inbox.mjs'
  * One agent session's questions (bridge/inbox.mjs), moved out of server.mjs
  * unchanged. Written after the move: a running bridge in DRY mode never hands
  * a question to the session. The generator below reads it the way
- * server.mjs's userMessages does.
+ * sessionInput.mjs's userMessages does.
  */
 
 /** userMessages' loop, without the turn: the items it would hand the SDK. */
@@ -78,8 +78,12 @@ test('the socket closing ends the generator too', async () => {
 
 test('server.mjs: one inbox per session, closed before it is replaced, read as next ?? wait, handed with put', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
-  // The inbox lives on the socket's state, `s` (socketState.mjs).
-  assert.match(server, /const item = ch\.next\(\) \?\? \(await ch\.wait\(\)\)\n {6}if \(s\.closed \|\| ch\.closed \|\| item == null\) return/)
+  // The inbox lives on the socket's state, `s` (socketState.mjs), and is read by the input
+  // generator (sessionInput.mjs) that each session is opened on.
+  const input = readFileSync(new URL('../bridge/sessionInput.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(input, /const item = ch\.next\(\) \?\? \(await ch\.wait\(\)\)\n {6}if \(s\.closed \|\| ch\.closed \|\| item == null\) return/)
+  assert.match(server, /prompt: userMessages\(s\.chan\),/)
+  assert.equal(input.match(/s\.chan\.|\.put\(/g), null, 'the reader neither puts nor reaches past the inbox it is given')
   // A session replaced closes its inbox first (sessionLifecycle.mjs: switch login, restart, resume).
   const life = readFileSync(new URL('../bridge/sessionLifecycle.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.equal(life.match(/s\.chan\.close\(\)\n\s+s\.chan = createInbox\(\)/g)?.length, 3, 'switch login, restart, resume')

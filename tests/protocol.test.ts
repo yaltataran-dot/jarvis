@@ -62,6 +62,8 @@ const turnResult = read('../bridge/turnResult.mjs')
 const failures = read('../bridge/failures.mjs')
 // The SDK stream turned into frames (sessionStream.mjs, built per socket in server.mjs with its send).
 const sessionStream = read('../bridge/sessionStream.mjs')
+// What goes into the session: the question as the SDK's input, and the effort frame (sessionInput.mjs).
+const sessionInput = read('../bridge/sessionInput.mjs')
 // The HUD's own servers on each connection draw panels, blades and the interface (sessionServers.mjs).
 const sessionServers = read('../bridge/sessionServers.mjs')
 const pageBridge = read('../src/lib/bridge.ts')
@@ -73,6 +75,13 @@ test('the bridge sends exactly the bridge frames of the contract', () => {
   sent.delete('user')
   for (const t of all(turns + turnResult + failures + sessionServers + sessionStream, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
   assert.match(server, /const pump = createSessionStream\(\{\n\s+s,\n\s+turns,\n\s+send,\n\s+sendTurn,\n/, "the stream sends with the socket's send and the turn's")
+  // Its `type: 'user'` is the SDK's input message, as in server.mjs before it moved; one, and only that.
+  const input = all(sessionInput, /(?<![A-Za-z_])type: '([a-z_]+)'/g)
+  assert.equal(sessionInput.match(/(?<![A-Za-z_])type: 'user'/g)?.length, 1)
+  assert.match(sessionInput, /yield \{\n\s+type: 'user',\n\s+message: \{ role: 'user', content: /)
+  input.delete('user')
+  for (const t of input) sent.add(t)
+  assert.match(server, /const userMessages = createSessionInput\(\{\n\s+s,\n\s+sendTurn,\n/, "the input sends with the turn's send")
   // The bridge's one request of the page goes out through ask(kind) (pageRequests.mjs, built per
   // socket in server.mjs), from the camera tool.
   for (const t of all(vision, /ask\(\s*'([a-z_]+)'/g)) sent.add(t)

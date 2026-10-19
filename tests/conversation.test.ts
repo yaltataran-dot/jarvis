@@ -58,7 +58,7 @@ function rig(o: { modelFails?: () => Failure; during?: () => void } = {}) {
   const flow = createCalendarFlow({ api, now: () => new Date('2026-10-14T15:36:00+03:00'), opId: () => `op${++n}` })
   const floor = createFloor<FloorSpeaker>({ interrupt: () => {} })
   const asides = createAsides('ru')
-  /** The bridge's side: which asides the session has had (server.mjs, userMessages). */
+  /** The bridge's side: which asides the session has had (sessionInput.mjs, userMessages). */
   const ledger = createAsideLedger()
   const asked: Array<{ said: string; context: string | null }> = []
   const replies: string[] = []
