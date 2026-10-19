@@ -103,6 +103,12 @@ test('server.mjs builds the frame, logs the names on the turn, and clears where 
     server,
     /const \{ announceTool, settleTool, clear: clearTools \} = createToolBadge\(\{\n {4}decideTool,\n {4}show: \(name\) => sendTurn\(\{ type: 'tool', name \}\),\n {4}called: \(name\) => s\.turnTools\.push\(name\),\n {2}\}\)/,
   )
-  assert.equal(server.match(/clearTools\(\)/g)?.length, 2, 'at a result and at a session restart')
+  assert.equal(server.match(/clearTools\(\)/g)?.length, 1, 'at a session restart')
+  // At a result: the SDK stream is read in sessionStream.mjs, with clearTools passed in.
+  const stream = readFileSync(new URL('../bridge/sessionStream.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.equal(stream.match(/clearTools\(\)/g)?.length, 1, 'at a result')
+  assert.match(stream, /case 'result': \{[^]*?clearTools\(\)[^]*?turns\.primaryEnded\(outcome\)\n {12}break/, 'before the turn is handed on')
+  assert.match(server, /= createSessionStream\(\{[^}]*\n {4}clearTools,\n/)
+  assert.doesNotMatch(stream, /seenTools|heldTools/)
   assert.doesNotMatch(server, /seenTools|heldTools/)
 })

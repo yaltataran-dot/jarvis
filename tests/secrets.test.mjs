@@ -272,7 +272,10 @@ test('the bridge is wired to all of it', () => {
   assert.doesNotMatch(server, /process\.env\.JARVIS_ALLOW_WRITES === '1'/)
   assert.match(server, /registerSecrets\(secretValuesFrom\(process\.env\)\)/)
   assert.match(server, /installLogRedaction\(console\)/)
-  assert.match(server, /send\(\{ type: 'error', message: redactSecrets\(/)
+  // The session stream's error frame is redacted with the bridge's own redaction (sessionStream.mjs).
+  const stream = readFileSync(new URL('../bridge/sessionStream.mjs', import.meta.url), 'utf8')
+  assert.match(stream, /send\(\{ type: 'error', message: redact\(/)
+  assert.match(server, /= createSessionStream\(\{[^}]*\n\s+redact: redactSecrets,\r?\n/)
   // Both shells are out of the model's reach in the default mode, and denied if they turn up.
   // The lists live in the tool policy (policy.mjs; behaviour in policy.test.mjs).
   const policy = readFileSync(new URL('../bridge/policy.mjs', import.meta.url), 'utf8')
@@ -280,7 +283,7 @@ test('the bridge is wired to all of it', () => {
   for (const shell of ["'Bash'", "'PowerShell'"]) assert.ok(disallowed.includes(shell), `${shell} not disallowed`)
   const writeSet = policy.slice(policy.indexOf('const WRITE_BUILTINS'), policy.indexOf('])', policy.indexOf('const WRITE_BUILTINS')))
   assert.ok(writeSet.includes("'PowerShell'") && writeSet.includes("'Bash'"))
-  for (const f of ['server.mjs', 'computer.mjs', 'piper.mjs', 'yandexMusic.mjs', 'googleCalendar.mjs']) {
+  for (const f of ['server.mjs', 'sessionStream.mjs', 'computer.mjs', 'piper.mjs', 'yandexMusic.mjs', 'googleCalendar.mjs']) {
     const src = readFileSync(new URL(`../bridge/${f}`, import.meta.url), 'utf8')
     assert.doesNotMatch(src, /\{\s*\.\.\.process\.env\b/, `${f} still spreads process.env into a child`)
   }

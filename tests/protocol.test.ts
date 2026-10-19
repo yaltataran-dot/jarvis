@@ -60,6 +60,8 @@ const pageRequests = read('../bridge/pageRequests.mjs')
 // frame for a question no login takes (noLoginFrame, failures.mjs).
 const turnResult = read('../bridge/turnResult.mjs')
 const failures = read('../bridge/failures.mjs')
+// The SDK stream turned into frames (sessionStream.mjs, built per socket in server.mjs with its send).
+const sessionStream = read('../bridge/sessionStream.mjs')
 // The HUD's own servers on each connection draw panels, blades and the interface (sessionServers.mjs).
 const sessionServers = read('../bridge/sessionServers.mjs')
 const pageBridge = read('../src/lib/bridge.ts')
@@ -69,7 +71,8 @@ test('the bridge sends exactly the bridge frames of the contract', () => {
   // `type: 'user'` is the Agent SDK's input message, not a frame; `subtype:` is not `type:`.
   const sent = all(server, /(?<![A-Za-z_])type: '([a-z_]+)'/g)
   sent.delete('user')
-  for (const t of all(turns + turnResult + failures + sessionServers, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
+  for (const t of all(turns + turnResult + failures + sessionServers + sessionStream, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
+  assert.match(server, /const pump = createSessionStream\(\{\n\s+s,\n\s+turns,\n\s+send,\n\s+sendTurn,\n/, "the stream sends with the socket's send and the turn's")
   // The bridge's one request of the page goes out through ask(kind) (pageRequests.mjs, built per
   // socket in server.mjs), from the camera tool.
   for (const t of all(vision, /ask\(\s*'([a-z_]+)'/g)) sent.add(t)
@@ -100,7 +103,7 @@ test('the page reads every bridge frame of the contract, and nothing else', () =
 })
 
 test('error kinds: the bridge sends only the contract kinds, and the page reads exactly them', () => {
-  const sent = all(server + turns + turnResult + failures, /kind: '(rate|service|[a-z]+)'(?=[,\s}])/g)
+  const sent = all(server + turns + turnResult + failures + sessionStream, /kind: '(rate|service|[a-z]+)'(?=[,\s}])/g)
   for (const k of ['ok', 'failed', 'config', 'cancelled']) sent.delete(k) // internal outcome kinds, not error frames
   assert.deepEqual(sorted(sent), sorted(values(ERROR_KINDS) as Set<string>))
   assert.match(pageBridge, /msg\.kind === 'rate' \|\| msg\.kind === 'service'/)

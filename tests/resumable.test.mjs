@@ -104,7 +104,10 @@ test('wiring: the bridge resumes only before a question, ends a stale socket, an
   assert.match(src, /const RESUMABLE = createResumable\(\)/)
   // The socket's state is one object, `s` (socketState.mjs).
   assert.match(src, /const s = createSocketState\(\{ effort: EFFORT, account: ACCOUNTS\.pick\(\) \?\? 'primary' \}\)/)
-  assert.match(src, /s\.sessionId = msg\.session_id\n {16}\/\/ .*\n {16}RESUMABLE\.issue\(s\.sessionId, s\.account, owner\)\n {16}send\(\{ type: 'session', id: s\.sessionId \}\)/, 'the id is handed to the page at init')
+  // The SDK stream, init included, is read in sessionStream.mjs, with this registry and owner passed in.
+  const stream = readFileSync(new URL('../bridge/sessionStream.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(stream, /s\.sessionId = msg\.session_id\n {16}\/\/ .*\n {16}resumable\.issue\(s\.sessionId, s\.account, owner\)\n {16}send\(\{ type: 'session', id: s\.sessionId \}\)/, 'the id is handed to the page at init')
+  assert.match(src, /= createSessionStream\(\{[^}]*\n {4}resumable: RESUMABLE,\n {4}owner,\n/, "the stream issues ids in this bridge's registry, as this socket")
   assert.match(src, /let verdict = s\.asked \? \{ ok: false, reason: 'already-asking' \} : RESUMABLE\.check\(msg\.id, s\.account\)/, 'never once a question is under way')
   assert.match(src, /send\(\{ type: 'resumed', ok: false \}\)/)
   assert.match(src, /send\(\{ type: 'resumed', ok: true \}\)/)
