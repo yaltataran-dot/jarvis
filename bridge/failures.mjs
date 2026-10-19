@@ -196,6 +196,30 @@ export function limitMidTurnMessage(lang = 'ru') {
 }
 
 /**
+ * What to tell the browser when a turn ends badly. Plain sentences, because
+ * whatever reaches the client is liable to be spoken. By result subtype, with
+ * a default; Russian for 'ru', English otherwise. Moved from server.mjs
+ * unchanged, where it is built once for the bridge's language.
+ */
+export function resultFailures(lang) {
+  return lang === 'ru'
+    ? {
+        error_during_execution: 'Запрос прервался на полпути.',
+        error_max_turns: 'Запрос шёл слишком долго и был остановлен.',
+        error_max_budget_usd: 'Бюджет на этот запрос исчерпан.',
+        error_max_structured_output_retries: 'Не удалось собрать ответ.',
+        default: 'Запрос завершился без ответа.',
+      }
+    : {
+        error_during_execution: 'The turn failed part way through.',
+        error_max_turns: 'The turn ran too long and was stopped.',
+        error_max_budget_usd: 'The budget for this turn ran out.',
+        error_max_structured_output_retries: 'The answer could not be assembled.',
+        default: 'The turn ended without an answer.',
+      }
+}
+
+/**
  * A short sentence for the screen. Reads, in order of how specific it is: the
  * HTTP status Claude Code recorded, the assistant message's error kind, a
  * status or network error written into the result text, the result subtype.

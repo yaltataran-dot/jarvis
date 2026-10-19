@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { allLoginsLimitedMessage, describeFailure, isAuthFailure, isRateLimit, rateLimitMessage, rateLimitReset, turnFailed } from '../bridge/failures.mjs'
+import { readFileSync } from 'node:fs'
+import { allLoginsLimitedMessage, describeFailure, isAuthFailure, isRateLimit, rateLimitMessage, rateLimitReset, resultFailures, turnFailed } from '../bridge/failures.mjs'
 
 test('an API error reported as a "successful" result is a failure', () => {
   // The shape that used to reach the page as an ordinary, unspoken answer.
@@ -157,4 +158,28 @@ test('a far reset is reported as it is; capping the pause is the caller\'s', () 
 test('the limit sentence names the time when it is known', () => {
   assert.equal(rateLimitMessage('22:50'), 'Лимит запросов Claude исчерпан до 22:50. Команды без модели работают.')
   assert.equal(rateLimitMessage(null), 'Лимит запросов Claude исчерпан. Попробуйте чуть позже.')
+})
+
+test('a turn that ends badly, by result subtype: the sentences as server.mjs had them, Russian only for "ru"', () => {
+  const ru = {
+    error_during_execution: 'Запрос прервался на полпути.',
+    error_max_turns: 'Запрос шёл слишком долго и был остановлен.',
+    error_max_budget_usd: 'Бюджет на этот запрос исчерпан.',
+    error_max_structured_output_retries: 'Не удалось собрать ответ.',
+    default: 'Запрос завершился без ответа.',
+  }
+  const en = {
+    error_during_execution: 'The turn failed part way through.',
+    error_max_turns: 'The turn ran too long and was stopped.',
+    error_max_budget_usd: 'The budget for this turn ran out.',
+    error_max_structured_output_retries: 'The answer could not be assembled.',
+    default: 'The turn ended without an answer.',
+  }
+  assert.deepEqual(resultFailures('ru'), ru)
+  assert.deepEqual(resultFailures('en'), en)
+  for (const lang of ['RU', 'de', undefined]) assert.deepEqual(resultFailures(lang), en, String(lang))
+  // Built once for the bridge's language, and read at the same two places as before.
+  const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(server, /^const RESULT_FAILURES = resultFailures\(LANG\)$/m)
+  assert.equal(server.match(/RESULT_FAILURES\[msg\.subtype\] \?\? RESULT_FAILURES\.default/g)?.length, 2)
 })

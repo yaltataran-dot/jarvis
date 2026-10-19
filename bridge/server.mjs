@@ -39,6 +39,7 @@ import {
   limitMidTurnMessage,
   rateLimitMessage,
   rateLimitReset,
+  resultFailures,
   turnFailed,
 } from './failures.mjs'
 import { createTurns } from './turns.mjs'
@@ -560,26 +561,8 @@ console.log(
     (ALLOW_NO_ORIGIN ? ' and clients that send no origin' : ''),
 )
 
-/**
- * What to tell the browser when a turn ends badly. Plain sentences, because
- * whatever reaches the client is liable to be spoken.
- */
-const RESULT_FAILURES =
-  LANG === 'ru'
-    ? {
-        error_during_execution: 'Запрос прервался на полпути.',
-        error_max_turns: 'Запрос шёл слишком долго и был остановлен.',
-        error_max_budget_usd: 'Бюджет на этот запрос исчерпан.',
-        error_max_structured_output_retries: 'Не удалось собрать ответ.',
-        default: 'Запрос завершился без ответа.',
-      }
-    : {
-        error_during_execution: 'The turn failed part way through.',
-        error_max_turns: 'The turn ran too long and was stopped.',
-        error_max_budget_usd: 'The budget for this turn ran out.',
-        error_max_structured_output_retries: 'The answer could not be assembled.',
-        default: 'The turn ended without an answer.',
-      }
+/** What to tell the browser when a turn ends badly, by result subtype (failures.mjs). */
+const RESULT_FAILURES = resultFailures(LANG)
 
 /**
  * The fallback channel for the usage limit — see fallback.mjs. Null unless it
