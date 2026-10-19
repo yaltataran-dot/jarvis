@@ -150,7 +150,12 @@ On the running bridge, in DRY mode (`JARVIS_DRY_ASK=1`, Claude never asked),
 first, `ping`/`pong`, a question's `text` then `done`, `trace`, `interrupt`, an
 unasked `reply`, a refused `resume`, junk ignored, the close logged. A real
 turn's frames are covered by `tests/turns.test.mjs` and, by source, by
-`tests/protocol.test.ts`.
+`tests/protocol.test.ts`; and the session core itself — sessions opened,
+resumed and replaced, a 429 moved to another login, a stream that ends, the
+order of frames — by `tests/sessionCore.test.mjs`, which runs the real
+connection handler on a stand-in for the Agent SDK's `query()`
+(`tests/support/`, loaded with `node --import`; nothing in `bridge/` knows
+about it).
 
 ### Recognition socket (`/stt-stream?why=…`)
 
