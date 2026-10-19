@@ -55,6 +55,7 @@ test('the declarations (protocol.d.mts) say the same as the module', () => {
 const server = read('../bridge/server.mjs')
 const turns = read('../bridge/turns.mjs')
 const vision = read('../bridge/vision.mjs')
+const pageRequests = read('../bridge/pageRequests.mjs')
 const pageBridge = read('../src/lib/bridge.ts')
 const pageResume = read('../src/lib/resume.ts')
 
@@ -63,9 +64,13 @@ test('the bridge sends exactly the bridge frames of the contract', () => {
   const sent = all(server, /(?<![A-Za-z_])type: '([a-z_]+)'/g)
   sent.delete('user')
   for (const t of all(turns, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
-  // The bridge's one request of the page goes out through ask(kind) (server.mjs), from the camera tool.
+  // The bridge's one request of the page goes out through ask(kind) (pageRequests.mjs, built per
+  // socket in server.mjs), from the camera tool.
   for (const t of all(vision, /ask\(\s*'([a-z_]+)'/g)) sent.add(t)
-  assert.match(server, /send\(\{ type: kind, id, \.\.\.args \}\)/, 'ask(kind) sends the kind as the frame type')
+  assert.equal(all(pageRequests, /(?<![A-Za-z_])type: '([a-z_]+)'/g).size, 0, 'pageRequests sends no frame of its own')
+  assert.match(pageRequests, /send\(\{ type: kind, id, \.\.\.args \}\)/, 'ask(kind) sends the kind as the frame type')
+  assert.match(server, /const \{ ask, reply: replied \} = createPageRequests\(\{ socket, send \}\)/)
+  assert.match(server, /jarvis_eyes: visionServer\(ask\)/)
   assert.deepEqual(sorted(sent), sorted(values(BRIDGE_FRAMES) as Set<string>))
 })
 

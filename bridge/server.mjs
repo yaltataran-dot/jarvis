@@ -66,6 +66,7 @@ import { agentEnv, installLogRedaction, redactSecrets, registerSecrets, secretVa
 import { createToolPolicy } from './policy.mjs'
 import { systemPromptFor } from './prompt.mjs'
 import { createAccess } from './access.mjs'
+import { createPageRequests } from './pageRequests.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 // Loopback only by default. Bound to every interface, the agent socket and the
@@ -831,31 +832,10 @@ wss.on('connection', (socket, req) => {
   const sendTurn = (msg) => turns.frame(msg)
 
   /**
-   * Asking the browser for something and waiting for the answer.
-   *
-   * Every other tool here pushes — a panel, a blade, a retint — and never needs
-   * a reply. The camera is the exception: the hardware is over there and the
-   * model is here, so a frame has to come back. Correlated by id because a turn
-   * can have more than one request in flight, and timed out because a browser
-   * that has been closed mid-question would otherwise hang the turn until the
-   * two-minute idle timer noticed.
+   * Asking the browser for something and waiting for the answer — the camera's
+   * frame, correlated by id and timed out (pageRequests.mjs).
    */
-  const waiting = new Map()
-  let asks = 0
-
-  const ask = (kind, args, timeoutMs = 20_000) =>
-    new Promise((resolve, reject) => {
-      if (socket.readyState !== socket.OPEN) {
-        return reject(new Error('the interface is not connected'))
-      }
-      const id = `q${++asks}`
-      const timer = setTimeout(() => {
-        waiting.delete(id)
-        reject(new Error('the interface did not answer in time'))
-      }, timeoutMs)
-      waiting.set(id, { resolve, timer })
-      send({ type: kind, id, ...args })
-    })
+  const { ask, reply: replied } = createPageRequests({ socket, send })
 
   /**
    * Announcing a tool on the HUD, once, and only if it actually runs.
@@ -1609,12 +1589,7 @@ wss.on('connection', (socket, req) => {
     }
 
     if (msg.type === 'reply' && typeof msg.id === 'string') {
-      const slot = waiting.get(msg.id)
-      if (slot) {
-        waiting.delete(msg.id)
-        clearTimeout(slot.timer)
-        slot.resolve(msg)
-      }
+      replied(msg)
     }
 
     if (msg.type === 'interrupt') {

@@ -76,6 +76,7 @@ are the largest remaining extraction (see the plan).
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
+| page requests | `pageRequests.mjs` (the bridge's requests of the page and their `reply` frames: `createPageRequests({ socket, send })` per socket, `ask(kind, args, timeoutMs)` correlated by id and timed out; tests in `tests/pageRequests.test.mjs`) |
 | access | `access.mjs` (the Origin and Host checks: `createAccess(env)`, called once by `server.mjs` with `process.env`; its `originAllowed` and `hostAllowed` run before every HTTP route and in the WebSocket handshake; rules in `tests/access.test.mjs`, the running bridge in `tests/bridgeBind.test.mjs`) |
 | system prompt | `prompt.mjs` (who JARVIS is and how he speaks: the English prompt, with the Russian head and tail for `ru`; `systemPromptFor(lang)`, the language decided in `server.mjs` from `LANG`; the text is pinned by SHA-256 per language in `tests/prompt.test.mjs`, so an edit to it is never silent) |
 | HTTP routes | `http/page.mjs` (`GET /page`; a remote web page served from the bridge's origin so it can be framed — the fetch, both modes and the SSRF gate stay in `page.mjs` and `net.mjs`; `bridgeOrigin`, `http://localhost:` and the port, is built in `server.mjs` and passed in; failures are an HTML error page, not redacted), `http/proxy.mjs` (`GET /img`, `GET /media`; remote images, video and audio fetched by the bridge — the SSRF gate and the guarded clients stay in `net.mjs`, shared with `page.mjs`; redaction passed in), `http/file.mjs` (`GET /file`; local images only — the image types, the size limit and the roots stay in `server.mjs` and are passed in, the containment check is built there from `withinRootsOf`), `http/stt.mjs` (`POST /stt`, one recorded segment to ElevenLabs Scribe; not the realtime `/stt-stream` socket), `http/tts.mjs` (`POST /tts`; ElevenLabs streamed or Piper, with the fallbacks; key, voices, synthesis and redaction passed in), `http/health.mjs` (`GET /health`; the keys and the engine choice stay in `server.mjs` and are passed in), `http/scribe-token.mjs` (`GET /scribe-token`; strict Origin rule, key and the shared two-second gap stay in `server.mjs` and are passed in; tokens are ElevenLabs' single-use ones, never kept by the bridge), `http/knowledge.mjs` (`POST /knowledge/answer`), `http/calendar.mjs` (`POST /calendar`; what may be written stays with `googleCalendar.mjs`), `http/music.mjs` (`POST /music`; actions and player calls stay with `yandexMusic.mjs`) |
@@ -121,7 +122,8 @@ Bridge → page: `ready {servers}`, `session {id}`, `resumed {ok}`, `text {delta
 `effort`, `panel`, `blade`, `ui {op, args}`, `capture {id, mode, reason, seconds, when}`, `pong`.
 
 `capture` is the one request the bridge makes of the page (its `ask(kind, args)`
-helper in `server.mjs`, used by the camera tool in `vision.mjs`); the page
+helper in `pageRequests.mjs`, one registry per socket built in `server.mjs`, used
+by the camera tool in `vision.mjs`); the page
 answers with `reply {id, data?, mimeType?, error?}`.
 
 One socket is one agent session and one conversation. Devices have separate
@@ -182,7 +184,7 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
   `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`,
   `bridge/http/file.mjs`, `bridge/http/proxy.mjs`, `bridge/http/page.mjs`,
-  `bridge/prompt.mjs`, `bridge/access.mjs`. `server.mjs` imports the last thirteen at start-up; without them it does not start.
+  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`. `server.mjs` imports the last fourteen at start-up; without them it does not start.
   This list is not yet checked against the server: the local copy of production
   from 2026-10-17 also lacks `bridge/accounts.mjs`, `fallback.mjs`,
   `resumable.mjs`, `secrets.mjs` and `turns.mjs`, which `server.mjs` imports too.
