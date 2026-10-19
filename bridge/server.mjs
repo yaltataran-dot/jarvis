@@ -53,6 +53,7 @@ import { pcServer } from './pc.mjs'
 import { createYandexMusic } from './yandexMusic.mjs'
 import { MUSIC_PATH, musicRequest } from './http/music.mjs'
 import { HEALTH_PATH, healthRequest } from './http/health.mjs'
+import { SCRIBE_TOKEN_PATH, scribeTokenRequest } from './http/scribe-token.mjs'
 import { musicServer } from './music.mjs'
 import { createGoogleCalendar } from './googleCalendar.mjs'
 import { CALENDAR_PATH, calendarRequest } from './http/calendar.mjs'
@@ -1000,47 +1001,14 @@ const handleRequest = async (req, res) => {
   // stays here: the page gets a short-lived credential that opens one
   // transcription session and nothing else. Neither the token nor the
   // upstream's error body is logged or passed on.
-  if (req.method === 'GET' && req.url === '/scribe-token') {
-    // Stricter than the rest of this handler: a request with no Origin is
-    // refused unless JARVIS_ALLOW_NO_ORIGIN is set. The <img> case that
-    // excuses it elsewhere does not apply to a fetch for a credential.
-    if (!originAllowed(origin)) {
-      res.writeHead(403, { ...cors, 'cache-control': 'no-store' })
-      return res.end('forbidden')
-    }
-    const key = elevenKey()
-    if (!key) {
-      res.writeHead(503, { ...cors, 'cache-control': 'no-store' })
-      return res.end('no elevenlabs key')
-    }
-    const now = Date.now()
-    if (now - lastScribeToken < SCRIBE_TOKEN_GAP_MS) {
-      res.writeHead(429, { ...cors, 'cache-control': 'no-store', 'retry-after': '2' })
-      return res.end('too many requests')
-    }
-    lastScribeToken = now
-    try {
-      const upstream = await fetch('https://api.elevenlabs.io/v1/single-use-token/realtime_scribe', {
-        method: 'POST',
-        headers: { 'xi-api-key': key },
-        signal: AbortSignal.timeout(5000),
-      })
-      if (!upstream.ok) {
-        console.warn(`[jarvis] scribe token refused by ElevenLabs (${upstream.status})`)
-        res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
-        return res.end('token request failed')
-      }
-      const { token } = await upstream.json()
-      if (typeof token !== 'string' || !token) {
-        res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
-        return res.end('token request failed')
-      }
-      res.writeHead(200, { ...cors, 'cache-control': 'no-store', 'content-type': 'application/json' })
-      return res.end(JSON.stringify({ token }))
-    } catch {
-      res.writeHead(502, { ...cors, 'cache-control': 'no-store' })
-      return res.end('token request failed')
-    }
+  if (req.method === 'GET' && req.url === SCRIBE_TOKEN_PATH) {
+    return scribeTokenRequest(req, res, {
+      cors,
+      origin,
+      originAllowed,
+      elevenKey,
+      gap: { ms: SCRIBE_TOKEN_GAP_MS, last: () => lastScribeToken, mark: (t) => void (lastScribeToken = t) },
+    })
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
