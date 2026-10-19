@@ -76,6 +76,7 @@ are the largest remaining extraction (see the plan).
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
+| latency | `latency.mjs` (a turn's `[latency]` line: `latNew(id)`, `latencyLine(lat, outcome, end)`, `ms`; the record itself stays in `server.mjs`, where the stream, the hand-over and the turn queue write to it; tests in `tests/latency.test.mjs`) |
 | tool badge | `toolBadge.mjs` (which tool calls the page's HUD is told about, and when: `createToolBadge({ decideTool, show, called })` per socket — allowed tools at once, the rest held until their result, the HUD's own tools never; tests in `tests/toolBadge.test.mjs`) |
 | page requests | `pageRequests.mjs` (the bridge's requests of the page and their `reply` frames: `createPageRequests({ socket, send })` per socket, `ask(kind, args, timeoutMs)` correlated by id and timed out; tests in `tests/pageRequests.test.mjs`) |
 | access | `access.mjs` (the Origin and Host checks: `createAccess(env)`, called once by `server.mjs` with `process.env`; its `originAllowed` and `hostAllowed` run before every HTTP route and in the WebSocket handshake; rules in `tests/access.test.mjs`, the running bridge in `tests/bridgeBind.test.mjs`) |
@@ -185,7 +186,7 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
   `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`,
   `bridge/http/file.mjs`, `bridge/http/proxy.mjs`, `bridge/http/page.mjs`,
-  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`. `server.mjs` imports the last fifteen at start-up; without them it does not start.
+  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`. `server.mjs` imports the last sixteen at start-up; without them it does not start.
   This list is not yet checked against the server: the local copy of production
   from 2026-10-17 also lacks `bridge/accounts.mjs`, `fallback.mjs`,
   `resumable.mjs`, `secrets.mjs` and `turns.mjs`, which `server.mjs` imports too.

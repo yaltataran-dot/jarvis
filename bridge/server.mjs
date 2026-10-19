@@ -68,6 +68,7 @@ import { systemPromptFor } from './prompt.mjs'
 import { createAccess } from './access.mjs'
 import { createPageRequests } from './pageRequests.mjs'
 import { createToolBadge } from './toolBadge.mjs'
+import { latNew, latencyLine, ms } from './latency.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 // Loopback only by default. Bound to every interface, the agent socket and the
@@ -863,28 +864,15 @@ wss.on('connection', (socket, req) => {
   const turnSeconds = () => (turnStartedAt ? ((Date.now() - turnStartedAt) / 1000).toFixed(1) : '?')
 
   /**
-   * Where a turn's time went, on the monotonic clock: one `[latency]` line per
-   * turn. Stages only — never the question, the answer or any tool's input.
-   *
-   *   recv     the ask arrived on the socket
-   *   start    handed to the agent (after any interrupt settled)
-   *   sent     the effort set and the message yielded to the SDK
-   *   first    the model's first stream event (its response has begun)
-   *   text     the first word of the answer
-   *   tools    each tool call, from its block starting to its result
+   * Where the turn in flight's time went: its record, written by the stream,
+   * the hand-over and the turn queue, and reported once as a `[latency]` line
+   * (latency.mjs).
    */
   let lat = null
-  const latNew = (id) => ({ id, effort: null, recv: performance.now(), start: 0, sent: 0, first: 0, text: 0, tools: new Map(), toolMs: 0, toolCount: 0 })
-  const ms = (a, b) => (a && b ? `${Math.round(b - a)}` : '-')
   const latReport = (outcome) => {
     if (!lat) return
     const end = performance.now()
-    console.log(
-      `[latency] ask=${String(lat.id).slice(0, 12)} ${outcome} effort=${lat.effort ?? '-'}` +
-        ` queue=${ms(lat.recv, lat.start)}ms prep=${ms(lat.start, lat.sent)}ms` +
-        ` model-first=${ms(lat.sent, lat.first)}ms first-text=${ms(lat.sent, lat.text)}ms` +
-        ` tools=${lat.toolCount}(${Math.round(lat.toolMs)}ms) total=${ms(lat.recv, end)}ms`,
-    )
+    console.log(latencyLine(lat, outcome, end))
     lat = null
   }
 
