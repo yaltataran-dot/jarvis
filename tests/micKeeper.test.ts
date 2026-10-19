@@ -63,25 +63,16 @@ test('a stream the browser ended is let go and a fresh one opened on the next re
   assert.equal(keeper.alive(), true)
 })
 
-test('the browser ending the stream in use is reported once; release() is not', async () => {
-  const { keeper } = rig()
-  let ended = 0
-  const off = keeper.onEnded(() => ended++)
+test('an old stream ending after it was replaced does not touch the one in use', async () => {
+  const { keeper, opened } = rig()
   const first = await keeper.get()
-  first.endByBrowser()
-  assert.equal(ended, 1)
-  // Our own release stops the tracks without announcing a loss.
-  const second = await keeper.get()
   keeper.release()
-  assert.equal(second.track.stopped, true)
-  assert.equal(ended, 1)
-  // An old stream ending after it was replaced is history, not news.
+  const second = await keeper.get()
+  // The browser gets round to ending the replaced stream only now.
   first.endByBrowser()
-  assert.equal(ended, 1)
-  off()
-  const third = await keeper.get()
-  third.endByBrowser()
-  assert.equal(ended, 1, 'unsubscribed')
+  assert.equal(keeper.alive(), true, 'the stream in use still hears')
+  assert.equal(await keeper.get(), second, 'and is handed out as it is')
+  assert.equal(opened.length, 2, 'nothing reopened')
 })
 
 test('release() stops the tracks and the next request reopens', async () => {

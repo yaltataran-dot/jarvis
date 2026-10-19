@@ -5,7 +5,7 @@
  */
 
 /** The part of a MediaStream the microphone keeper looks at; tests pass fakes. */
-type MicTrack = { readyState: string; stop: () => void; addEventListener: (type: 'ended', fn: () => void) => void }
+type MicTrack = { readyState: string; stop: () => void }
 type MicStream = { getAudioTracks: () => MicTrack[] }
 
 /**
@@ -22,7 +22,6 @@ type MicStream = { getAudioTracks: () => MicTrack[] }
 export function createMicKeeper<S extends MicStream>(request: () => Promise<S>) {
   let stream: S | null = null
   let pending: Promise<S> | null = null
-  const listeners = new Set<() => void>()
 
   const live = (s: S | null) => Boolean(s?.getAudioTracks().some((t) => t.readyState === 'live'))
 
@@ -39,12 +38,6 @@ export function createMicKeeper<S extends MicStream>(request: () => Promise<S>) 
     pending = request()
       .then((s) => {
         stream = s
-        for (const t of s.getAudioTracks()) {
-          t.addEventListener('ended', () => {
-            // Only the stream being handed out matters; an old one ending is history.
-            if (stream === s && !live(s)) for (const fn of [...listeners]) fn()
-          })
-        }
         return s
       })
       .finally(() => {
@@ -59,11 +52,6 @@ export function createMicKeeper<S extends MicStream>(request: () => Promise<S>) 
     alive: () => live(stream),
     /** Stop the tracks and forget the stream; the next get() opens a new one. */
     release,
-    /** Called when the stream in use stops hearing (lock screen, unplugged, revoked). */
-    onEnded: (fn: () => void) => {
-      listeners.add(fn)
-      return () => listeners.delete(fn)
-    },
     current: () => stream,
   }
 }
@@ -81,7 +69,6 @@ const mic = createMicKeeper(() =>
 export const getMic = (): Promise<MediaStream> => mic.get()
 export const micAlive = mic.alive
 export const releaseMic = mic.release
-export const onMicEnded = mic.onEnded
 
 let ctx: AudioContext | null = null
 let analyser: AnalyserNode | null = null

@@ -1,12 +1,11 @@
-# The page on a phone, and what the Android app takes over
+# The page on a phone
 
-JARVIS on a phone runs today as the web page in mobile Chrome. A native
-Android app is planned; the site on the phone stays as a fallback way in.
-This document records which parts of the page exist only for mobile browsers,
-which are general and stay, and what the app has to do itself.
-
-Nothing here is removed yet. Category 1 is removed only after the app is in
-use and checked (criteria below), and with the owner's separate approval.
+The web page in mobile Chrome is a full interface to JARVIS and stays one. A
+native Android app is planned as an additional interface, not a replacement:
+both use the same bridge, protocol (`shared/protocol.mjs`), tools and
+knowledge base. This document records which parts of the page exist for
+mobile browsers and why they stay, what was removed as no longer needed, and
+what the app will do itself.
 
 ## Where it came from
 
@@ -18,74 +17,70 @@ design, not a phone workaround. Keyword hits such as "micro**phone**", "touch"
 as in "change", or the `android` MCP server in `fillers.ts`/`config.ts` are not
 mobile code.
 
-## Category 1 — to remove after the app is in use
+## Removed: no longer needed
 
-Only for Chrome on Android; nothing on the computer depends on them.
+- **Restart on the microphone track ending** (`onEnded` in `createMicKeeper`
+  and the `onMicEnded` export, `src/lib/audio.ts`; removed 2026-10-19). The
+  first attempt at a page that stopped hearing after a phone's screen locked:
+  the voice loop restarted whenever the track ended. It killed a working
+  fallback recogniser and looped, so the page stopped subscribing to it
+  (`tests/lifecycle.test.ts` keeps that check); the mechanism had no caller
+  left. Recovery reads whether the stream still hears (`alive()`, `micAlive`)
+  when the page comes back, which stays. Its test became one that checks an
+  old stream ending does not touch the one in use.
 
-### 1a. Screen wake lock during an answer
+## Phone-browser specific — stays
 
-- **What:** keeps a phone screen on while JARVIS answers, because a locked
-  screen took the microphone and the audio away from the page.
-- **Code:** `src/lib/screenWake.ts` (whole file: `createScreenWake`,
-  `screenWake`, `WakeState`); in `src/lib/tts.ts`: the `screenWake` import,
-  `QUIET_SPEAKER_MS`, `wakeOwner`, the two `screenWake.hold(…)` calls,
-  `soundStarted`, `queueDry`'s `screenWake.letGo(…)`, and the
-  `screenWake.letGo(wakeOwner, 0)` on stop.
-- **Tests:** `tests/screenWake.test.ts` (19), `tests/speakerWake.test.mjs` (6).
-- **Map:** `screenWake` in `tests/architecture.test.ts` and in the voice row of
-  `docs/ARCHITECTURE.md`.
-- **Care:** `tts.ts` is the speech queue; the edit must leave its timing
-  (`BETWEEN_ANSWERS_MS`, the end of each answer, the stop) as it is. Check
-  with the remaining speech tests and by voice on the computer.
+These exist for Chrome on Android and are what make the page work there. They
+change nothing on the computer.
 
-### 1b. No browser recogniser fallback on Android
+### Screen wake lock during an answer
 
-- **What:** on Android, Chrome's recogniser cannot open a microphone the page
-  already holds, so after the realtime recogniser fails the page asks for a
-  touch instead of falling back to it.
-- **Code:** `src/lib/voice.ts`: `browserFallbackWorks()` and
-  `fallback: browserFallbackWorks()` in the supervisor's options (the computer
-  keeps `fallback: true`, today's behaviour there).
-- **Tests:** the `fallback: browserFallbackWorks\(\)` check in
-  `tests/voiceCycle.test.ts` (wiring test); the phone/computer recovery tests
-  in the same file stay and must pass with `fallback: true`.
+- **What:** keeps a phone screen on while JARVIS answers; a locked screen took
+  the microphone and the audio away from the page.
+- **Code:** `src/lib/screenWake.ts`; in `src/lib/tts.ts` the `screenWake`
+  import, `QUIET_SPEAKER_MS`, `wakeOwner`, `screenWake.hold(…)`/`letGo(…)`.
+- **Tests:** `tests/screenWake.test.ts`, `tests/speakerWake.test.mjs`.
 
-### 1c. The Android wording for a refused browser recogniser
+### No browser recogniser fallback on Android
 
-- **What:** `speechRefusalMessage` in `src/lib/micErrors.ts` says "the
-  microphone is allowed, but the browser's recogniser could not get it" when
-  the permission is granted — the Android case. `classifyMicError`,
-  `micFailureMessage`, `audioBlockedMessage` and `sttUnavailableMessage` are
-  general and stay.
-- **Code:** the `permission === 'granted'` branch of `speechRefusalMessage`;
-  its caller in `src/lib/browserVoice.ts` stays.
-- **Tests:** the `granted` case in `tests/micErrors.test.ts`.
+- **What:** Chrome's recogniser on Android cannot open a microphone the page
+  already holds, so there the page asks for a touch instead of falling back to
+  it (on the computer it falls back as before).
+- **Code:** `browserFallbackWorks()` and `fallback: browserFallbackWorks()` in
+  `src/lib/voice.ts`.
+- **Tests:** `tests/voiceCycle.test.ts`.
 
-### Criteria for removing category 1
+### The Android wording for a refused browser recogniser
 
-All of these, then the owner's approval for the removal itself:
+- **What:** "the microphone is allowed, but the browser's recogniser could not
+  get it" — the Android case of `not-allowed` with the permission granted.
+- **Code:** the `permission === 'granted'` branch of `speechRefusalMessage` in
+  `src/lib/micErrors.ts`, called from `src/lib/browserVoice.ts`.
+- **Tests:** `tests/micErrors.test.ts`.
 
-1. The Android app is in daily use on the phone.
-2. Checked on a real phone with the app: the voice loop end to end, "Стоп",
-   recovery after a VPN switch, a Wi-Fi/mobile switch and airplane mode, and
-   behaviour on an unstable network.
-3. The owner accepts that the site on the phone, kept as a fallback, then
-   works without the screen wake lock (a long answer can be cut by the screen
-   locking) and with the general wording for a refused recogniser.
-4. Removed one item (1a, 1b, 1c) at a time, each with the full test run, type
-   check, lint, build and a voice check on the computer; the release check of
-   the deploy procedure passes for the resulting set.
+### Touch
 
-## Category 2 — general, stays
+- **What:** the microphone restarts on a tap counted on `pointerup` (a finger
+  is a user gesture only when lifted), and a pinch or a pan is not a tap.
+- **Code:** `armTapOnce`, `TAP_EVENT`, `TAP_SLOP_PX` in `src/lib/lifecycle.ts`.
+- **Tests:** `tests/lifecycle.test.ts`.
 
-These were written after phone failures but are general fixes; the computer
-uses them, and their server side serves the Android app too.
+### Layout
+
+- Dialog frame rules (`svh`) and the link status position in the ≤900 px
+  block of `src/index.css`; `tests/dialogLayout.test.ts`.
+
+## General fixes — stay
+
+Written after phone failures, but general: the computer uses them too, and
+their server side serves the Android app as well.
 
 | Code | Why it stays |
 |---|---|
 | `audioStart.ts`, `primeCapture()` in `pcmCapture.ts`/`App.tsx`, bounded `unlockAudio` in `sfx.ts` | Every browser requires a user gesture to start audio, desktop Chrome included |
 | Capture watchdog in `pcmCapture.ts`; close codes 4010–4013 in `deepgramVoice.ts` | A capture also stops on the computer (headset unplugged, Bluetooth switch) |
-| `createMicKeeper` in `audio.ts` | A stream also dies on the computer when the device changes |
+| `createMicKeeper` in `audio.ts` (a live stream only; one `getUserMedia` for two requests) | A stream also dies on the computer when the device changes |
 | `lifecycle.ts`: `watchLifecycle`, `planRecovery`, `createRecoveryGate`, `micPermission` | A laptop waking from sleep, a network change |
 | `armTapOnce` with its multi-finger guard | A mouse click works the same; touch screens exist on computers |
 | `voiceSupervisor.ts`, `scribeVoice.ts`, the Deepgram parser's `onPhraseEnd` | The voice loop's own recovery and phrase handling |
@@ -93,7 +88,7 @@ uses them, and their server side serves the Android app too.
 | Dialog frame rules (`svh`) in the ≤900 px block, `tests/dialogLayout.test.ts` | Responsive layout |
 | Bridge: three Deepgram sessions with replacement (`4001`), `?why=` start reason, page close codes 4000–4099 in the log | A computer and a phone at once; diagnosis |
 
-## Category 3 — what the Android app does itself
+## What the Android app will do itself
 
 The server stays common: recognition through `/stt-stream`, turns through `/`,
 speech through `/tts`, tools, knowledge base, sessions, all per
@@ -115,7 +110,7 @@ speech through `/tts`, tools, knowledge base, sessions, all per
 ## Voice functions: shared logic or audio handling
 
 The app must not copy JARVIS's logic into Kotlin without a separate
-architectural decision. This is where the line falls today:
+architectural decision (owner, 2026-10-19). This is where the line falls today:
 
 **Audio handling — each client does its own** (device and platform):
 capture (`pcmCapture.ts`, `pcm.ts`, the worklet, `audioStart.ts`), the
