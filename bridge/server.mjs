@@ -26,7 +26,6 @@ import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
-import { renderPage } from './page.mjs'
 import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.mjs'
 import { effortFor } from './effort.mjs'
 import { asidesFrom, createAsideLedger, createBlockJoin, formatAsides, withAside } from './turnText.mjs'
@@ -56,6 +55,7 @@ import { TTS_PATH, ttsRequest } from './http/tts.mjs'
 import { STT_HTTP_PATH, sttRequest } from './http/stt.mjs'
 import { FILE_PATH_PREFIX, fileRequest, withinRootsOf } from './http/file.mjs'
 import { IMG_PATH_PREFIX, MEDIA_PATH_PREFIX, imgRequest, mediaRequest } from './http/proxy.mjs'
+import { PAGE_PATH_PREFIX, pageRequest } from './http/page.mjs'
 import { musicServer } from './music.mjs'
 import { createGoogleCalendar } from './googleCalendar.mjs'
 import { CALENDAR_PATH, calendarRequest } from './http/calendar.mjs'
@@ -900,41 +900,10 @@ const handleRequest = async (req, res) => {
   }
 
   // A whole web page, fetched here and served from this origin so it can be
-  // framed. The publisher's X-Frame-Options and CORS rules are enforced against
-  // the browser, and from the browser's point of view this document is ours —
-  // so an article that refuses to be embedded anywhere still opens on the
-  // display. See page.mjs for what each mode does to the markup.
-  //
-  // No Origin header arrives on an iframe navigation, so this rides the same
-  // path as an <img> load through the check at the top of this handler.
-  if (req.method === 'GET' && req.url?.startsWith('/page?')) {
-    const asked = new URL(req.url, 'http://x')
-    const target = asked.searchParams.get('url') ?? ''
-    const mode = asked.searchParams.get('mode') === 'live' ? 'live' : 'reader'
-    try {
-      const page = await renderPage(target, mode, `http://localhost:${PORT}`)
-      res.writeHead(200, { ...cors, ...page.headers })
-      return res.end(page.body)
-    } catch (err) {
-      // Rendered as a page rather than returned as a status, because this lands
-      // inside an iframe: a bare 502 body is a blank rectangle on the display,
-      // which reads as the interface being broken rather than as the article
-      // being unavailable.
-      res.writeHead(err.status ?? 502, {
-        ...cors,
-        'content-type': 'text/html; charset=utf-8',
-        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
-      })
-      return res.end(
-        `<!doctype html><meta charset="utf-8"><style>
-           body{margin:0;padding:26px;background:transparent;color:#7fb6bf;
-                font:400 13px/1.6 ui-monospace,monospace}
-           b{color:#cfe9ee;font-weight:500;display:block;margin-bottom:6px}
-         </style><b>This page could not be opened.</b>${
-           String(err?.message ?? 'unknown error').replace(/[<&]/g, '')
-         }`,
-      )
-    }
+  // framed; no Origin arrives on an iframe navigation, so it rides the same
+  // checks as an <img> load (http/page.mjs).
+  if (req.method === 'GET' && req.url?.startsWith(PAGE_PATH_PREFIX)) {
+    return pageRequest(req, res, { cors, bridgeOrigin: `http://localhost:${PORT}` })
   }
 
   // Yandex Music, for the commands the page recognises itself ("пауза",
