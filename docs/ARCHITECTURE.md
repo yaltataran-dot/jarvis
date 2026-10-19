@@ -70,7 +70,7 @@ are the largest remaining extraction (see the plan).
 | Module | Files |
 |---|---|
 | **server** (composition: start-up wiring, HTTP dispatch, the agent socket and its sessions) | `server.mjs` |
-| turns and failures | `turns.mjs`, `turnText.mjs`, `failures.mjs`, `effort.mjs`, `fallback.mjs`, `accounts.mjs`, `resumable.mjs`, `turnLog.mjs` |
+| turns and failures | `turns.mjs`, `turnText.mjs`, `failures.mjs`, `effort.mjs`, `fallback.mjs`, `accounts.mjs`, `resumable.mjs`, `turnLog.mjs`, `turnResult.mjs` (what a turn's `result` means — done, stopped, the limit with the login held, or a failure with a login refused set aside — and the hold times; `createTurnOutcome` built once by `server.mjs`, called by the session stream; tests in `tests/turnResult.test.mjs`) |
 | speech | `deepgramProxy.mjs`, `piper.mjs` |
 | tools | `computer.mjs`, `pc.mjs`, `chrome.mjs`, `panels.mjs`, `ui.mjs`, `vision.mjs`, `visual.mjs`, `page.mjs`, `net.mjs`, `calendar.mjs`, `googleCalendar.mjs`, `music.mjs`, `yandexMusic.mjs` |
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
@@ -93,8 +93,10 @@ socket: per connection, the session's lifecycle (open, restart, switch login,
 resume), the input stream to the SDK, the SDK stream turned into frames
 (`pump`), the turn queue's wiring — including the login switching, one try
 per other login (`accounts.mjs`, `turns.mjs`) — and the page frames'
-dispatch. Those share one socket's mutable state, so they have not moved; the
-pieces that stand alone have (`pageRequests.mjs`, `toolBadge.mjs`, `latency.mjs`). Routes moved one at a time,
+dispatch. Those share one socket's mutable state, so they move only where a
+piece stands alone: `pageRequests.mjs`, `toolBadge.mjs`, `latency.mjs`, and what
+a turn's result means (`turnResult.mjs`), which the stream calls with the turn's
+values and then ends the turn itself, in the same order as before. Routes moved one at a time,
 each with tests written against the code while it was still in `server.mjs`
 (`tests/policy.test.mjs`, `tests/httpKnowledge.test.mjs`, `tests/httpCalendar.test.mjs`,
 `tests/httpMusic.test.mjs`, `tests/httpHealth.test.mjs`, `tests/httpScribeToken.test.mjs`,
@@ -198,7 +200,7 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
   `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`,
   `bridge/http/file.mjs`, `bridge/http/proxy.mjs`, `bridge/http/page.mjs`,
-  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`. `server.mjs` imports the last seventeen at start-up; without them it does not start.
+  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`. `server.mjs` imports the last eighteen at start-up; without them it does not start.
   This list is not yet checked against the server: the local copy of production
   from 2026-10-17 also lacks `bridge/accounts.mjs`, `fallback.mjs`,
   `resumable.mjs`, `secrets.mjs` and `turns.mjs`, which `server.mjs` imports too.

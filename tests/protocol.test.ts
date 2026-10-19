@@ -56,6 +56,10 @@ const server = read('../bridge/server.mjs')
 const turns = read('../bridge/turns.mjs')
 const vision = read('../bridge/vision.mjs')
 const pageRequests = read('../bridge/pageRequests.mjs')
+// Frames the session stream builds outside server.mjs: a turn's result (turnResult.mjs), and the
+// frame for a question no login takes (noLoginFrame, failures.mjs).
+const turnResult = read('../bridge/turnResult.mjs')
+const failures = read('../bridge/failures.mjs')
 const pageBridge = read('../src/lib/bridge.ts')
 const pageResume = read('../src/lib/resume.ts')
 
@@ -63,7 +67,7 @@ test('the bridge sends exactly the bridge frames of the contract', () => {
   // `type: 'user'` is the Agent SDK's input message, not a frame; `subtype:` is not `type:`.
   const sent = all(server, /(?<![A-Za-z_])type: '([a-z_]+)'/g)
   sent.delete('user')
-  for (const t of all(turns, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
+  for (const t of all(turns + turnResult + failures, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
   // The bridge's one request of the page goes out through ask(kind) (pageRequests.mjs, built per
   // socket in server.mjs), from the camera tool.
   for (const t of all(vision, /ask\(\s*'([a-z_]+)'/g)) sent.add(t)
@@ -93,7 +97,7 @@ test('the page reads every bridge frame of the contract, and nothing else', () =
 })
 
 test('error kinds: the bridge sends only the contract kinds, and the page reads exactly them', () => {
-  const sent = all(server + turns, /kind: '(rate|service|[a-z]+)'(?=[,\s}])/g)
+  const sent = all(server + turns + turnResult + failures, /kind: '(rate|service|[a-z]+)'(?=[,\s}])/g)
   for (const k of ['ok', 'failed', 'config', 'cancelled']) sent.delete(k) // internal outcome kinds, not error frames
   assert.deepEqual(sorted(sent), sorted(values(ERROR_KINDS) as Set<string>))
   assert.match(pageBridge, /msg\.kind === 'rate' \|\| msg\.kind === 'service'/)

@@ -30,17 +30,7 @@ import { defaultPiperVoice, piperSpeak, piperVoices, warmPiper } from './piper.m
 import { effortFor } from './effort.mjs'
 import { asidesFrom, createAsideLedger, createBlockJoin, formatAsides, withAside } from './turnText.mjs'
 import { asksToSee } from './visual.mjs'
-import {
-  describeFailure,
-  fallbackDownMessage,
-  isAuthFailure,
-  isRateLimit,
-  limitMidTurnMessage,
-  noLoginFrame,
-  rateLimitReset,
-  resultFailures,
-  turnFailed,
-} from './failures.mjs'
+import { fallbackDownMessage, limitMidTurnMessage, noLoginFrame, resultFailures, turnFailed } from './failures.mjs'
 import { createTurns } from './turns.mjs'
 import { createAccounts } from './accounts.mjs'
 import { createBudget, createFallback, fallbackConfig, fileStore } from './fallback.mjs'
@@ -69,6 +59,7 @@ import { createAccess } from './access.mjs'
 import { createPageRequests } from './pageRequests.mjs'
 import { createToolBadge } from './toolBadge.mjs'
 import { latNew, latencyLine, ms } from './latency.mjs'
+import { ACCOUNT_DOWN_MS, createTurnOutcome } from './turnResult.mjs'
 import { backupLoginDirs, configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from './settings.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
@@ -199,29 +190,9 @@ const CAL = createGoogleCalendar({ log: (line) => console.log(line) })
 const KNOWLEDGE = startKnowledge()
 if (KNOWLEDGE.kb) console.log('[knowledge] ready')
 
-/**
- * The usage limit, once it is known to be reached.
- *
- * Measured: with the session limit hit, every question still went to the
- * model and came back as a 429 a second later — each one another request
- * against a limit already spent. So when a turn fails with the limit, the
- * model is left alone until the time Claude Code gave for it to lift (or a
- * minute, when it gave none), and questions in the meantime are answered at
- * once with the same plain sentence. Everything that needs no model — the
- * page's own answers, music, the calendar — goes on working. The first
- * question after the time passes goes to the model as normal. Bridge-wide,
- * because the limit belongs to the account, not to one page.
- *
- * Held per login (accounts.mjs): with backups in JARVIS_CLAUDE_BACKUP_DIR (one
- * directory, or several on the path delimiter — settings.mjs), a limited login
- * hands new sessions to the next one free until its time passes, and the model
- * is held off only while every one is.
- */
-const LIMIT_PAUSE_FALLBACK_MS = 60_000
-/** Never trust a parsed time to hold the model off for longer than this. */
-const LIMIT_PAUSE_MAX_MS = 6 * 60 * 60_000
-/** A login that refused itself, or whose session would not start, is left alone this long. */
-const ACCOUNT_DOWN_MS = 15 * 60_000
+// The usage limit, and how long a limited or refused login is held off:
+// turnResult.mjs.
+
 // The primary login's directory, as the agent finds it — never also a backup.
 const PRIMARY_LOGIN_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 const ACCOUNTS = createAccounts({ backupDirs: backupLoginDirs(process.env, { primaryDir: PRIMARY_LOGIN_DIR }) })
@@ -552,6 +523,9 @@ console.log(
 
 /** What to tell the browser when a turn ends badly, by result subtype (failures.mjs). */
 const RESULT_FAILURES = resultFailures(LANG)
+
+/** What a turn's result means, for every socket (turnResult.mjs). */
+const turnOutcome = createTurnOutcome({ accounts: ACCOUNTS, lang: LANG, failures: RESULT_FAILURES, noLogin })
 
 /**
  * The fallback channel for the usage limit — see fallback.mjs. Null unless it
@@ -1033,98 +1007,16 @@ wss.on('connection', (socket, req) => {
           }
 
           case 'result': {
-            // A result is not automatically a success. The error subtypes
-            // carry no `result` field at all, so reporting them as 'done' with
-            // empty text is indistinguishable from a turn that simply had
-            // nothing to say — the HUD stops spinning and JARVIS stands there
-            // silent. Say what happened instead.
-            //
-            // Nor is subtype 'success' always one: an API error that ends the
-            // turn — 403 when the VPN drops, a DNS failure — arrives as
-            // 'success' with is_error set and the error as the result text,
-            // never streamed. Passed on as 'done' it was an answer nobody heard.
-            // See failures.mjs.
-            //
-            // The frame is handed to turns.mjs rather than sent: it decides
-            // whether the page still wants it, and whether the limit's frame
-            // becomes a question for the fallback instead.
-            //
-            // The page stopped this turn — barge-in, "стоп", a newer question.
-            // Such a turn ends as error_during_execution, which is the
-            // expected shape of a stop and not a fault; logged as a failure
-            // it buried the real ones.
+            // What the result means — see turnResult.mjs. The page stopped this
+            // turn when turns.mjs says so; its frame is handed to turns.mjs.
             const turnInterrupted = turns.interrupted()
-            let outcome
-            if (!turnFailed(msg, turnApiError)) {
-              console.log(
-                `[jarvis] turn ok in ${turnSeconds()} s` +
-                  (turnTools.length ? ` · tools: ${turnTools.join(', ')}` : ''),
-              )
-              outcome = {
-                kind: 'ok',
-                frame: { type: 'done', text: msg.result ?? '', costUsd: msg.total_cost_usd ?? null },
-              }
-            } else if (turnInterrupted && msg.subtype === 'error_during_execution' && !turnApiError) {
-              console.log(
-                `[jarvis] turn interrupted after ${turnSeconds()} s` +
-                  (turnTools.length ? ` · tools: ${turnTools.join(', ')}` : ''),
-              )
-              outcome = {
-                kind: 'failed',
-                frame: { type: 'error', message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default },
-              }
-            } else if (isRateLimit(msg, turnApiError)) {
-              // The limit: hold this login off until it lifts — see ACCOUNTS.
-              const reset = rateLimitReset(msg)
-              const now = Date.now()
-              const until = reset ? Math.min(reset.until, now + LIMIT_PAUSE_MAX_MS) : now + LIMIT_PAUSE_FALLBACK_MS
-              ACCOUNTS.hold(account, until, reset?.clock ?? null, 'rate')
-              console.error(
-                `[jarvis] turn failed after ${turnSeconds()} s: usage limit (429)` +
-                  (ACCOUNTS.switchable() ? ` · login ${account}` : '') +
-                  ` · model paused until ${new Date(until).toLocaleTimeString()}`,
-              )
-              // Every login held off: the user waits for the soonest of them, not this one.
-              const blocked = ACCOUNTS.blocked()
-              const clock = blocked ? blocked.clock : (reset?.clock ?? null)
-              outcome = {
-                kind: 'rate',
-                frame: noLogin(clock, blocked),
-              }
-            } else {
-              const described = describeFailure(msg, turnApiError, LANG)
-              console.error(
-                `[jarvis] turn failed after ${turnSeconds()} s: ${msg.subtype}` +
-                  ` · is_error=${msg.is_error === true}` +
-                  ` · api_status=${msg.api_error_status ?? 'none'}` +
-                  ` · api_error=${turnApiError ?? 'none'}` +
-                  (turnTools.length ? ` · tools: ${turnTools.join(', ')}` : '') +
-                  (msg.result ? ` · result: ${String(msg.result).slice(0, 300)}` : ''),
-                msg.errors ?? '',
-              )
-              // A login that refused itself: with another to go to, set it
-              // aside, so the next turn opens there instead of failing again.
-              if (ACCOUNTS.switchable() && isAuthFailure(msg, turnApiError)) {
-                ACCOUNTS.hold(account, Date.now() + ACCOUNT_DOWN_MS, null, 'down')
-                console.warn(`[jarvis] login ${account} refused — set aside for ${ACCOUNT_DOWN_MS / 60_000} min`)
-              }
-              // The specific cause when one is known; otherwise the subtype's
-              // own sentence, as before.
-              const generic = describeFailure({ subtype: 'unknown' }, null, LANG)
-              outcome = {
-                kind: 'failed',
-                frame: {
-                  type: 'error',
-                  // A known cause outside JARVIS — the network, the VPN, the
-                  // service — rather than a fault of his own.
-                  ...(described !== generic ? { kind: 'service' } : {}),
-                  message:
-                    described !== generic
-                      ? described
-                      : (RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default),
-                },
-              }
-            }
+            const outcome = turnOutcome(msg, {
+              apiError: turnApiError,
+              interrupted: turnInterrupted,
+              account,
+              seconds: turnSeconds,
+              tools: turnTools,
+            })
             latReport(
               !turnFailed(msg, turnApiError) ? 'ok' : turnInterrupted ? 'interrupted' : `failed:${msg.subtype}`,
             )

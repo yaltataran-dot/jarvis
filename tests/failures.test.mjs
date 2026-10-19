@@ -193,7 +193,10 @@ test('a turn that ends badly, by result subtype: the sentences as server.mjs had
   // Built once for the bridge's language, and read at the same two places as before.
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(server, /^const RESULT_FAILURES = resultFailures\(LANG\)$/m)
-  assert.equal(server.match(/RESULT_FAILURES\[msg\.subtype\] \?\? RESULT_FAILURES\.default/g)?.length, 2)
+  // Read where a turn's result is decided (turnResult.mjs), handed the bridge's own.
+  const result = readFileSync(new URL('../bridge/turnResult.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(server, /createTurnOutcome\(\{ accounts: ACCOUNTS, lang: LANG, failures: RESULT_FAILURES, noLogin \}\)/)
+  assert.equal(result.match(/failures\[msg\.subtype\] \?\? failures\.default/g)?.length, 2)
 })
 
 test('more than two logins at their limit: "all", not "both"; two is unchanged', () => {
@@ -238,12 +241,13 @@ test('the fallback could not answer either: "the limit" by default, "unavailable
 test('server.mjs builds both limit frames, after a 429 and while held, from noLoginFrame, and words the fallback by what holds the logins', () => {
   const server = readFileSync(new URL('../bridge/server.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
   assert.match(server, /const noLogin = \(clock, blocked\) => noLoginFrame\(\{ clock, blocked, logins: ACCOUNTS\.labels\(\)\.length, lang: LANG \}\)/)
-  assert.match(server, /frame: noLogin\(clock, blocked\),/)
-  assert.match(server, /return noLogin\(blocked\.clock, blocked\)/)
+  const result = readFileSync(new URL('../bridge/turnResult.mjs', import.meta.url), 'utf8').replace(/\r/g, '')
+  assert.match(result, /frame: noLogin\(clock, blocked\),/, 'after a 429 (turnResult.mjs)')
+  assert.match(server, /return noLogin\(blocked\.clock, blocked\)/, 'while held (pausedFrame)')
   assert.match(server, /fallbackDown: \(kind\) => fallbackDownMessage\(kind, LANG, \{ limited: ACCOUNTS\.blocked\(\)\?\.limited !== false \}\),/)
   assert.doesNotMatch(server, /limitMessage\(/)
   // The hold times are as they were.
-  assert.match(server, /const LIMIT_PAUSE_FALLBACK_MS = 60_000\n/)
-  assert.match(server, /const LIMIT_PAUSE_MAX_MS = 6 \* 60 \* 60_000\n/)
-  assert.match(server, /const ACCOUNT_DOWN_MS = 15 \* 60_000\n/)
+  assert.match(result, /export const LIMIT_PAUSE_FALLBACK_MS = 60_000\n/)
+  assert.match(result, /export const LIMIT_PAUSE_MAX_MS = 6 \* 60 \* 60_000\n/)
+  assert.match(result, /export const ACCOUNT_DOWN_MS = 15 \* 60_000\n/)
 })
