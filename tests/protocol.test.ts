@@ -60,6 +60,8 @@ const pageRequests = read('../bridge/pageRequests.mjs')
 // frame for a question no login takes (noLoginFrame, failures.mjs).
 const turnResult = read('../bridge/turnResult.mjs')
 const failures = read('../bridge/failures.mjs')
+// The HUD's own servers on each connection draw panels, blades and the interface (sessionServers.mjs).
+const sessionServers = read('../bridge/sessionServers.mjs')
 const pageBridge = read('../src/lib/bridge.ts')
 const pageResume = read('../src/lib/resume.ts')
 
@@ -67,14 +69,15 @@ test('the bridge sends exactly the bridge frames of the contract', () => {
   // `type: 'user'` is the Agent SDK's input message, not a frame; `subtype:` is not `type:`.
   const sent = all(server, /(?<![A-Za-z_])type: '([a-z_]+)'/g)
   sent.delete('user')
-  for (const t of all(turns + turnResult + failures, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
+  for (const t of all(turns + turnResult + failures + sessionServers, /(?<![A-Za-z_])type: '([a-z_]+)'/g)) sent.add(t)
   // The bridge's one request of the page goes out through ask(kind) (pageRequests.mjs, built per
   // socket in server.mjs), from the camera tool.
   for (const t of all(vision, /ask\(\s*'([a-z_]+)'/g)) sent.add(t)
   assert.equal(all(pageRequests, /(?<![A-Za-z_])type: '([a-z_]+)'/g).size, 0, 'pageRequests sends no frame of its own')
   assert.match(pageRequests, /send\(\{ type: kind, id, \.\.\.args \}\)/, 'ask(kind) sends the kind as the frame type')
   assert.match(server, /const \{ ask, reply: replied \} = createPageRequests\(\{ socket, send \}\)/)
-  assert.match(server, /jarvis_eyes: visionServer\(ask\)/)
+  assert.match(sessionServers, /jarvis_eyes: visionServer\(ask\)/)
+  assert.match(server, /mcpServers: sessionServers\(\{[^}]*\n {8}ask,\n/)
   assert.deepEqual(sorted(sent), sorted(values(BRIDGE_FRAMES) as Set<string>))
 })
 

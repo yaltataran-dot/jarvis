@@ -19,10 +19,7 @@ import { WebSocketServer } from 'ws'
 import { STT_PATH, createSttProxy, keyProblem } from './deepgramProxy.mjs'
 import { createResumable, transcriptPath } from './resumable.mjs'
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import { displayServer } from './panels.mjs'
-import { uiServer } from './ui.mjs'
-import { chromeAvailable, chromeServer } from './chrome.mjs'
-import { visionServer } from './vision.mjs'
+import { chromeAvailable } from './chrome.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -36,7 +33,6 @@ import { createAccounts } from './accounts.mjs'
 import { createBudget, createFallback, fallbackConfig, fileStore } from './fallback.mjs'
 import { createTurnLog, recordTrace } from './turnLog.mjs'
 import { PROJECT_ROOT } from './computer.mjs'
-import { pcServer } from './pc.mjs'
 import { createYandexMusic } from './yandexMusic.mjs'
 import { MUSIC_PATH, musicRequest } from './http/music.mjs'
 import { HEALTH_PATH, healthRequest } from './http/health.mjs'
@@ -46,10 +42,8 @@ import { STT_HTTP_PATH, sttRequest } from './http/stt.mjs'
 import { FILE_PATH_PREFIX, fileRequest, withinRootsOf } from './http/file.mjs'
 import { IMG_PATH_PREFIX, MEDIA_PATH_PREFIX, imgRequest, mediaRequest } from './http/proxy.mjs'
 import { PAGE_PATH_PREFIX, pageRequest } from './http/page.mjs'
-import { musicServer } from './music.mjs'
 import { createGoogleCalendar } from './googleCalendar.mjs'
 import { CALENDAR_PATH, calendarRequest } from './http/calendar.mjs'
-import { calendarServer } from './calendar.mjs'
 import { formatNotes, notesFor, startKnowledge } from './knowledgeRoute.mjs'
 import { KNOWLEDGE_ANSWER_PATH, knowledgeAnswer } from './http/knowledge.mjs'
 import { agentEnv, installLogRedaction, redactSecrets, registerSecrets, secretValuesFrom, writesAllowed } from './secrets.mjs'
@@ -61,6 +55,7 @@ import { createToolBadge } from './toolBadge.mjs'
 import { latNew, latencyLine, ms } from './latency.mjs'
 import { ACCOUNT_DOWN_MS, createTurnOutcome } from './turnResult.mjs'
 import { createInbox } from './inbox.mjs'
+import { sessionServers } from './sessionServers.mjs'
 import { backupLoginDirs, configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from './settings.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
@@ -749,42 +744,20 @@ wss.on('connection', (socket, req) => {
     prompt: userMessages(chan),
     options: {
       ...(resume ? { resume } : {}),
-      // Everything Claude Code has configured, plus the HUD as an in-process
-      // server. The HUD's handler closes over this socket, so a `display` call
-      // lands on screen directly — which is also why this object is built per
-      // connection rather than once.
-      mcpServers: {
-        ...MCP_SERVERS,
-        // Drawn only for a turn still wanted: a panel from a stopped turn
-        // would land in the middle of the next one.
-        jarvis: displayServer(
-          (panel) => turns.live() && send({ type: 'panel', panel }),
-          (blade) => turns.live() && send({ type: 'blade', blade }),
-          {
-            // A composed panel only when this turn's question asked to see
-            // something — see visual.mjs.
-            mayShow: () => turnMayShow,
-            onRefused: (what) => console.log(`[jarvis] panel refused (${what}): not asked to see`),
-          },
-        ),
-        // The interface controls, on the same socket. A separate key because
-        // MCP tool names are `mcp__<key>__<tool>` and one key can only carry
-        // one server; the underscore in it is why decideTool and announceTool
-        // both name `jarvis_ui` explicitly.
-        jarvis_ui: uiServer((op, args) => turns.live() && send({ type: 'ui', op, args })),
-        // The user's own Chrome, over the extension's native-host socket. It
-        // holds no per-connection state, but it is built here with the rest so
-        // the write gate is read once, at the same point as everything else.
-        jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }),
-        // The camera, which unlike everything else here has to ask and wait.
-        jarvis_eyes: visionServer(ask),
-        // The computer: open an approved app, list, find, read, run a check.
-        jarvis_pc: pcServer({ roots: PC_ROOTS, log: (line) => console.log(line) }),
-        // Yandex Music: play, pause, tracks, volume, search.
-        jarvis_music: musicServer(YM),
-        // Google Calendar, read-only for the model.
-        jarvis_calendar: calendarServer(CAL),
-      },
+      // Everything Claude Code has configured, plus the bridge's own servers on
+      // this socket — built per connection (sessionServers.mjs).
+      mcpServers: sessionServers({
+        configured: MCP_SERVERS,
+        send,
+        // Drawn only for a turn still wanted; a panel only when this question asked to see.
+        live: () => turns.live(),
+        mayShow: () => turnMayShow,
+        ask,
+        allowWrites: ALLOW_WRITES,
+        pcRoots: PC_ROOTS,
+        ym: YM,
+        cal: CAL,
+      }),
       disallowedTools: DISALLOWED_BUILTINS,
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
