@@ -115,5 +115,5 @@ test('wiring: the bridge resumes only before a question, ends a stale socket, an
   assert.match(src, /if \(sessionId\) RESUMABLE\.release\(sessionId, owner\)/, 'released on close')
   // The resume handler starts a session; it does not hand anything to turns.
   const handler = src.slice(src.indexOf("if (msg.type === 'resume') {"), src.indexOf("if (msg.type === 'ask' && typeof msg.text === 'string') {"))
-  assert.doesNotMatch(handler, /turns\.ask|chan\.inbox\.push/, 'no question is replayed')
+  assert.doesNotMatch(handler, /turns\.ask|chan\.inbox\.push|chan\.put/, 'no question is replayed')
 })

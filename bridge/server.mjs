@@ -60,6 +60,7 @@ import { createPageRequests } from './pageRequests.mjs'
 import { createToolBadge } from './toolBadge.mjs'
 import { latNew, latencyLine, ms } from './latency.mjs'
 import { ACCOUNT_DOWN_MS, createTurnOutcome } from './turnResult.mjs'
+import { createInbox } from './inbox.mjs'
 import { backupLoginDirs, configuredServers, createVoiceKeys, fileRoots, languageFrom, pcRoots } from './settings.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
@@ -574,13 +575,8 @@ wss.on('connection', (socket, req) => {
   )
 
   let closed = false
-  /**
-   * The questions for the agent session now running, and the resolver of the
-   * one its input generator is waiting on. One per session: a session stuck
-   * on a stopped turn is replaced (turns.mjs), and the old generator has to
-   * end with it rather than take the next question.
-   */
-  let chan = { inbox: [], deliver: null, closed: false }
+  /** The questions for the agent session now running, one inbox per session (inbox.mjs). */
+  let chan = createInbox()
 
   /** The effort the session is on now, so it is only changed when it differs. */
   let sessionEffort = EFFORT
@@ -624,11 +620,7 @@ wss.on('connection', (socket, req) => {
 
   async function* userMessages(ch) {
     while (!closed && !ch.closed) {
-      const item =
-        ch.inbox.shift() ??
-        (await new Promise((resolve) => {
-          ch.deliver = resolve
-        }))
+      const item = ch.next() ?? (await ch.wait())
       if (closed || ch.closed || item == null) return
       // The question, and what the page answered by itself before it (aside.ts
       // in the page). Effort is sorted on the question alone: the note is long
@@ -903,9 +895,8 @@ wss.on('connection', (socket, req) => {
   const switchTo = (to, why) => {
     console.log(`[jarvis] claude login ${account} -> ${to} (${why})`)
     const old = session
-    chan.closed = true
-    chan.deliver?.(null)
-    chan = { inbox: [], deliver: null, closed: false }
+    chan.close()
+    chan = createInbox()
     sessionGen++
     try {
       old?.close?.()
@@ -1077,8 +1068,7 @@ wss.on('connection', (socket, req) => {
       // on a pump that has already stopped. Close it so it reconnects.
       closed = true
       turns.close()
-      chan.closed = true
-      chan.deliver?.(null)
+      chan.close()
       s.close?.()
       socket.close()
     }
@@ -1106,13 +1096,7 @@ wss.on('connection', (socket, req) => {
         turnStartedAt = Date.now()
         turnTools = []
         turnApiError = null
-        if (chan.deliver) {
-          const resolve = chan.deliver
-          chan.deliver = null
-          resolve({ text, asides })
-        } else {
-          chan.inbox.push({ text, asides })
-        }
+        chan.put({ text, asides })
       },
       interrupt: () => session?.interrupt?.(),
       /**
@@ -1124,9 +1108,8 @@ wss.on('connection', (socket, req) => {
       restart() {
         console.warn(`[jarvis] turn still running ${TURN_WAIT_CAP_MS / 1000} s after it was stopped — restarting the agent session`)
         const old = session
-        chan.closed = true
-        chan.deliver?.(null)
-        chan = { inbox: [], deliver: null, closed: false }
+        chan.close()
+        chan = createInbox()
         sessionGen++
         try {
           old?.close?.()
@@ -1267,9 +1250,8 @@ wss.on('connection', (socket, req) => {
       if (verdict.holder && verdict.holder !== owner) verdict.holder.close()
       const replace = (resume) => {
         const old = session
-        chan.closed = true
-        chan.deliver?.(null)
-        chan = { inbox: [], deliver: null, closed: false }
+        chan.close()
+        chan = createInbox()
         sessionGen++
         try {
           old?.close?.()
@@ -1337,8 +1319,7 @@ wss.on('connection', (socket, req) => {
     if (sessionId) RESUMABLE.release(sessionId, owner)
     // Aborts a fallback answer in flight: nobody is left to hear it.
     turns.close()
-    chan.closed = true
-    chan.deliver?.(null)
+    chan.close()
     session?.close?.()
   })
 })

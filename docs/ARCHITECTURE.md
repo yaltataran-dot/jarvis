@@ -76,6 +76,7 @@ are the largest remaining extraction (see the plan).
 | knowledge | `knowledge.mjs`, `knowledgeRoute.mjs`, `knowledgeAdmin.mjs` |
 | secrets | `secrets.mjs` (redaction, the agent's environment, the writes switch) |
 | tool policy | `policy.mjs` (which tools the agent may run: built-in lists, MCP rules, `decideTool`; built once from the writes switch) |
+| session inbox | `inbox.mjs` (one agent session's questions: `put`, `next`, `wait`, `close`; one per session, closed before it is replaced, read by the input generator as `next() ?? await wait()`; tests in `tests/inbox.test.mjs`) |
 | latency | `latency.mjs` (a turn's `[latency]` line: `latNew(id)`, `latencyLine(lat, outcome, end)`, `ms`; the record itself stays in `server.mjs`, where the stream, the hand-over and the turn queue write to it; tests in `tests/latency.test.mjs`) |
 | tool badge | `toolBadge.mjs` (which tool calls the page's HUD is told about, and when: `createToolBadge({ decideTool, show, called })` per socket — allowed tools at once, the rest held until their result, the HUD's own tools never; tests in `tests/toolBadge.test.mjs`) |
 | page requests | `pageRequests.mjs` (the bridge's requests of the page and their `reply` frames: `createPageRequests({ socket, send })` per socket, `ask(kind, args, timeoutMs)` correlated by id and timed out; tests in `tests/pageRequests.test.mjs`) |
@@ -94,7 +95,8 @@ resume), the input stream to the SDK, the SDK stream turned into frames
 (`pump`), the turn queue's wiring — including the login switching, one try
 per other login (`accounts.mjs`, `turns.mjs`) — and the page frames'
 dispatch. Those share one socket's mutable state, so they move only where a
-piece stands alone: `pageRequests.mjs`, `toolBadge.mjs`, `latency.mjs`, and what
+piece stands alone: `pageRequests.mjs`, `toolBadge.mjs`, `latency.mjs`, the session's
+inbox (`inbox.mjs`), and what
 a turn's result means (`turnResult.mjs`), which the stream calls with the turn's
 values and then ends the turn itself, in the same order as before. Routes moved one at a time,
 each with tests written against the code while it was still in `server.mjs`
@@ -200,7 +202,7 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
   `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`,
   `bridge/http/file.mjs`, `bridge/http/proxy.mjs`, `bridge/http/page.mjs`,
-  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`. `server.mjs` imports the last eighteen at start-up; without them it does not start.
+  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`, `bridge/inbox.mjs`. `server.mjs` imports the last nineteen at start-up; without them it does not start.
   This list is not yet checked against the server: the local copy of production
   from 2026-10-17 also lacks `bridge/accounts.mjs`, `fallback.mjs`,
   `resumable.mjs`, `secrets.mjs` and `turns.mjs`, which `server.mjs` imports too.
