@@ -52,7 +52,8 @@ import { PROJECT_ROOT } from './computer.mjs'
 import { pcServer } from './pc.mjs'
 import { createYandexMusic, musicAction } from './yandexMusic.mjs'
 import { musicServer } from './music.mjs'
-import { calendarAction, createGoogleCalendar } from './googleCalendar.mjs'
+import { createGoogleCalendar } from './googleCalendar.mjs'
+import { CALENDAR_PATH, calendarRequest } from './http/calendar.mjs'
 import { calendarServer } from './calendar.mjs'
 import { formatNotes, notesFor, startKnowledge } from './knowledgeRoute.mjs'
 import { KNOWLEDGE_ANSWER_PATH, knowledgeAnswer } from './http/knowledge.mjs'
@@ -1189,26 +1190,9 @@ const handleRequest = async (req, res) => {
   // Google Calendar, for the page's calendar flow (src/lib/calendarFlow.ts):
   // status, list, and the writes it sends only after a spoken yes. Always 200
   // with a result object; what happened is in its `code`.
-  if (req.method === 'POST' && req.url === '/calendar') {
-    let body = ''
-    for await (const chunk of req) {
-      body += chunk
-      if (body.length > 8192) {
-        req.destroy()
-        res.writeHead(413, cors)
-        return res.end('body too large')
-      }
-    }
-    let cmd
-    try {
-      cmd = JSON.parse(body || '{}')
-    } catch {
-      res.writeHead(400, cors)
-      return res.end('bad json')
-    }
-    const result = await calendarAction(CAL, cmd)
-    res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-    return res.end(JSON.stringify(result))
+  // (http/calendar.mjs)
+  if (req.method === 'POST' && req.url === CALENDAR_PATH) {
+    return calendarRequest(req, res, { cors, cal: CAL })
   }
 
   // A question the page asks before it asks Claude: is it one the user has
