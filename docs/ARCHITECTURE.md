@@ -128,6 +128,13 @@ One socket is one agent session and one conversation. Devices have separate
 conversations. A dropped socket can ask for its session back (`resume`) within
 the bridge's resume window.
 
+On the running bridge, in DRY mode (`JARVIS_DRY_ASK=1`, Claude never asked),
+`tests/bridgeSocket.test.mjs` pins what can be reached without a model: `ready`
+first, `ping`/`pong`, a question's `text` then `done`, `trace`, `interrupt`, an
+unasked `reply`, a refused `resume`, junk ignored, the close logged. A real
+turn's frames are covered by `tests/turns.test.mjs` and, by source, by
+`tests/protocol.test.ts`.
+
 ### Recognition socket (`/stt-stream?why=…`)
 
 Page → bridge: binary frames of 16 kHz mono PCM16. Bridge → page: JSON
