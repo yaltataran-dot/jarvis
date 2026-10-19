@@ -220,10 +220,15 @@ A release set lists its files explicitly, so the shared layer has to be in it:
   `bridge/http/calendar.mjs`, `bridge/http/music.mjs`, `bridge/http/health.mjs`,
   `bridge/http/scribe-token.mjs`, `bridge/http/tts.mjs`, `bridge/http/stt.mjs`,
   `bridge/http/file.mjs`, `bridge/http/proxy.mjs`, `bridge/http/page.mjs`,
-  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`, `bridge/inbox.mjs`, `bridge/sessionServers.mjs`, `bridge/socketState.mjs`, `bridge/sessionLifecycle.mjs`, `bridge/sessionStream.mjs`, `bridge/sessionInput.mjs`, `bridge/pageFrames.mjs`. `server.mjs` imports the last twenty-five at start-up; without them it does not start.
-  This list is not yet checked against the server: the local copy of production
-  from 2026-10-17 also lacks `bridge/accounts.mjs`, `fallback.mjs`,
+  `bridge/prompt.mjs`, `bridge/access.mjs`, `bridge/pageRequests.mjs`, `bridge/toolBadge.mjs`, `bridge/latency.mjs`, `bridge/settings.mjs`, `bridge/turnResult.mjs`, `bridge/inbox.mjs`, `bridge/sessionServers.mjs`, `bridge/socketState.mjs`, `bridge/sessionLifecycle.mjs`, `bridge/sessionStream.mjs`, `bridge/sessionInput.mjs`, `bridge/pageFrames.mjs`. The bridge loads all twenty-five of these `bridge/` files at start-up and does not
+  start without any of them: `server.mjs` imports twenty-four of them directly, and
+  `bridge/inbox.mjs` through `bridge/socketState.mjs` and `bridge/sessionLifecycle.mjs`,
+  not from `server.mjs` itself.
+  This list has not been checked against production yet. The local copy of
+  production from 2026-10-17 also lacks `bridge/accounts.mjs`, `fallback.mjs`,
   `resumable.mjs`, `secrets.mjs` and `turns.mjs`, which `server.mjs` imports too.
+  Before the next deploy, check that every module the bridge imports, directly
+  or through another module, is present on the server.
 - `shared/` and `bridge/http/` are new directories on the server. Installing
   new files must create their directories (`install -D -m 644`); the current
   deploy scripts install new files with `install -m 644`, which does not, and
